@@ -17,6 +17,14 @@
     --green: #3ddc84;
     --amber: #ffb454;
     --red: #ff5468;
+    /* aurora blobs + sparkline lines — variables so the in-app theme editor can
+       re-skin the whole dashboard, not just the cards. JS reads --spark-* via
+       getComputedStyle; defaults here match the shipped config theme block. */
+    --aurora1: #1450ff;
+    --aurora2: #8a2bff;
+    --aurora3: #00d4c0;
+    --spark_cpu: #38e1ff;
+    --spark_tx: #ff5fa8;
     --mono: ui-monospace, "Cascadia Code", Menlo, monospace;
   }
   * { box-sizing: border-box; margin: 0; }
@@ -33,9 +41,9 @@
      blur(70px) is what melts them into the aurora wash */
   .aurora { position: fixed; inset: 0; z-index: -1; overflow: hidden; filter: blur(70px) saturate(1.3); }
   .aurora i { position: absolute; border-radius: 50%; opacity: .26; }
-  .aurora i:nth-child(1) { width: 55vmax; height: 55vmax; background: #1450ff; top: -20vmax; left: -12vmax; animation: drift1 26s ease-in-out infinite alternate; }
-  .aurora i:nth-child(2) { width: 45vmax; height: 45vmax; background: #8a2bff; bottom: -18vmax; right: -10vmax; animation: drift2 31s ease-in-out infinite alternate; }
-  .aurora i:nth-child(3) { width: 30vmax; height: 30vmax; background: #00d4c0; top: 40%; left: 55%; animation: drift3 22s ease-in-out infinite alternate; opacity: .16; }
+  .aurora i:nth-child(1) { width: 55vmax; height: 55vmax; background: var(--aurora1); top: -20vmax; left: -12vmax; animation: drift1 26s ease-in-out infinite alternate; }
+  .aurora i:nth-child(2) { width: 45vmax; height: 45vmax; background: var(--aurora2); bottom: -18vmax; right: -10vmax; animation: drift2 31s ease-in-out infinite alternate; }
+  .aurora i:nth-child(3) { width: 30vmax; height: 30vmax; background: var(--aurora3); top: 40%; left: 55%; animation: drift3 22s ease-in-out infinite alternate; opacity: .16; }
   @keyframes drift1 { to { transform: translate(9vmax, 7vmax) scale(1.15); } }
   @keyframes drift2 { to { transform: translate(-8vmax, -6vmax) scale(.9); } }
   @keyframes drift3 { to { transform: translate(-12vmax, 5vmax); } }
@@ -132,6 +140,52 @@
   .links a em { font-size: 18px; font-style: normal; }
 
   footer { text-align: center; color: var(--dim); font-family: var(--mono); font-size: 11.5px; margin-top: 26px; opacity: .7; }
+
+  /* ---- header action buttons (gear / logout) ---- */
+  .iconbtn { cursor: pointer; background: none; border: none; color: var(--dim); font-size: 18px; line-height: 1; padding: 2px 4px; transition: color .2s, transform .2s; }
+  .iconbtn:hover { color: var(--text); transform: rotate(12deg); }
+  .iconbtn.logout:hover { transform: none; color: var(--red); }
+  [hidden] { display: none !important; }
+
+  /* ---- auth overlay (setup / login gate) ---- */
+  .overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(4,5,12,.82); backdrop-filter: blur(8px); }
+  .panel { width: 100%; max-width: 380px; background: var(--card); border: 1px solid var(--card-edge); border-radius: 18px; padding: 26px 24px; backdrop-filter: blur(16px); box-shadow: 0 18px 50px rgba(0,0,0,.5); }
+  .panel h2 { font-size: 13px; letter-spacing: .18em; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; }
+  .panel .lead { font-size: 13px; color: var(--dim); margin-bottom: 18px; }
+  .field { display: block; margin-bottom: 14px; }
+  .field > span { display: block; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); margin-bottom: 5px; }
+  input[type=text], input[type=password], input[type=number], select {
+    width: 100%; background: rgba(255,255,255,.04); border: 1px solid var(--card-edge);
+    border-radius: 9px; padding: 9px 11px; color: var(--text); font: inherit; font-size: 14px; }
+  input:focus, select:focus { outline: none; border-color: var(--cyan); }
+  .btn { cursor: pointer; border: none; border-radius: 9px; padding: 10px 16px; font: inherit; font-weight: 600; font-size: 14px;
+    background: linear-gradient(90deg, var(--cyan), var(--violet)); color: #06121a; }
+  .btn:hover { filter: brightness(1.08); }
+  .btn.ghost { background: rgba(255,255,255,.06); color: var(--text); border: 1px solid var(--card-edge); }
+  .btn:disabled { opacity: .5; cursor: default; filter: none; }
+  .formerr { color: var(--red); font-size: 12.5px; min-height: 16px; margin-top: 2px; }
+
+  /* ---- settings modal ---- */
+  .modal-back { position: fixed; inset: 0; z-index: 40; background: rgba(4,5,12,.7); backdrop-filter: blur(6px); display: flex; align-items: flex-start; justify-content: center; padding: 28px 16px; overflow-y: auto; }
+  .modal { width: 100%; max-width: 640px; background: var(--card); border: 1px solid var(--card-edge); border-radius: 18px; padding: 0; backdrop-filter: blur(18px); box-shadow: 0 18px 50px rgba(0,0,0,.5); }
+  .modal-head { display: flex; align-items: center; gap: 12px; padding: 18px 22px; border-bottom: 1px solid var(--card-edge); position: sticky; top: 0; }
+  .modal-head h2 { font-size: 16px; letter-spacing: .04em; margin-right: auto; }
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; padding: 12px 22px 0; }
+  .tab { cursor: pointer; background: none; border: none; color: var(--dim); font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 8px 8px 0 0; }
+  .tab.on { color: var(--text); background: rgba(255,255,255,.05); }
+  .tabpane { padding: 18px 22px 22px; }
+  .tabpane[hidden] { display: none; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr 1fr auto auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .row.cat { grid-template-columns: 1fr 2fr auto; }
+  .row .del { cursor: pointer; background: none; border: none; color: var(--dim); font-size: 16px; }
+  .row .del:hover { color: var(--red); }
+  .swatch { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; }
+  .swatch label { flex: 1; font-size: 13px; color: var(--text); text-transform: capitalize; }
+  .swatch input[type=color] { width: 38px; height: 28px; border: 1px solid var(--card-edge); border-radius: 6px; background: none; padding: 0; cursor: pointer; }
+  .modal-foot { display: flex; gap: 10px; align-items: center; padding: 16px 22px; border-top: 1px solid var(--card-edge); position: sticky; bottom: 0; background: var(--card); border-radius: 0 0 18px 18px; }
+  .modal-foot .msg { margin-left: auto; font-size: 12.5px; color: var(--dim); }
+  .toggle { display: flex; align-items: center; gap: 9px; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -145,6 +199,8 @@
       <span>up <b id="uptime">…</b></span>
       <span>load <b id="load">…</b></span>
       <span id="clock">--:--:--</span>
+      <button class="iconbtn" id="gear" title="Settings" hidden>⚙</button>
+      <button class="iconbtn logout" id="logoutBtn" title="Log out" hidden>⎋</button>
     </div>
   </header>
 
@@ -190,6 +246,80 @@
   <footer id="footer">vitaldeck · zero-dependency stdlib python · sse live feed</footer>
 </div>
 
+<!-- auth gate: setup wizard on first run, login afterwards -->
+<div class="overlay" id="authOverlay" hidden>
+  <div class="panel">
+    <form id="setupForm" hidden autocomplete="off">
+      <h2>Welcome to vitaldeck</h2>
+      <p class="lead">Create your admin account to get started.</p>
+      <label class="field"><span>Username</span><input type="text" id="suUser" autocomplete="username"></label>
+      <label class="field"><span>Password (min 8 characters)</span><input type="password" id="suPass" autocomplete="new-password"></label>
+      <label class="field"><span>Confirm password</span><input type="password" id="suPass2" autocomplete="new-password"></label>
+      <div class="formerr" id="suErr"></div>
+      <button class="btn" id="suBtn" type="submit" style="width:100%">Create account</button>
+    </form>
+    <form id="loginForm" hidden autocomplete="off">
+      <h2>vitaldeck</h2>
+      <p class="lead">Sign in to your dashboard.</p>
+      <label class="field"><span>Username</span><input type="text" id="liUser" autocomplete="username"></label>
+      <label class="field"><span>Password</span><input type="password" id="liPass" autocomplete="current-password"></label>
+      <div class="formerr" id="liErr"></div>
+      <button class="btn" id="liBtn" type="submit" style="width:100%">Sign in</button>
+    </form>
+  </div>
+</div>
+
+<!-- settings: edit name, alerts, links, categories, theme (all persisted) -->
+<div class="modal-back" id="settings" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h2>Settings</h2>
+      <button class="iconbtn" id="settingsClose" title="Close" style="margin-left:auto">✕</button>
+    </div>
+    <div class="tabs" id="tabs">
+      <button class="tab on" data-tab="general" type="button">General</button>
+      <button class="tab" data-tab="alerts" type="button">Alerts</button>
+      <button class="tab" data-tab="links" type="button">Links</button>
+      <button class="tab" data-tab="cats" type="button">Categories</button>
+      <button class="tab" data-tab="theme" type="button">Appearance</button>
+    </div>
+
+    <div class="tabpane" data-pane="general">
+      <label class="field"><span>Dashboard name</span><input type="text" id="setName" placeholder="(uses hostname when blank)"></label>
+    </div>
+
+    <div class="tabpane" data-pane="alerts" hidden>
+      <div class="grid2" id="alertGrid"></div>
+      <label class="toggle" style="margin-top:16px"><input type="checkbox" id="ctrToggle"> Notify on container start / stop</label>
+      <label class="field" style="margin-top:16px"><span>Webhook minimum severity</span>
+        <select id="minSev"><option value="warn">warn</option><option value="crit">crit</option></select></label>
+      <p class="lead" style="margin-top:8px">The Discord webhook URL is set in <code>config.json</code> inside the data volume — it is intentionally not editable here, since anyone who can open the dashboard could otherwise read it.</p>
+    </div>
+
+    <div class="tabpane" data-pane="links" hidden>
+      <div id="linkRows"></div>
+      <button class="btn ghost" id="addLink" type="button">+ Add link</button>
+    </div>
+
+    <div class="tabpane" data-pane="cats" hidden>
+      <div id="catRows"></div>
+      <button class="btn ghost" id="addCat" type="button">+ Add category</button>
+      <p class="lead" style="margin-top:8px">A container is grouped under a rule when its compose directory equals or sits under that path.</p>
+    </div>
+
+    <div class="tabpane" data-pane="theme" hidden>
+      <div id="themeGrid"></div>
+      <button class="btn ghost" id="resetTheme" type="button">Reset to defaults</button>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn" id="saveBtn" type="button">Save changes</button>
+      <button class="btn ghost" id="settingsCancel" type="button">Close</button>
+      <span class="msg" id="saveMsg"></span>
+    </div>
+  </div>
+</div>
+
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -202,6 +332,8 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
 // allow only http(s)/ssh and relative (/ or #) targets; block javascript:, data:, etc.
 const safeUrl = u => /^(https?:|ssh:|\/|#)/i.test(String(u ?? "").trim())
   ? String(u).trim() : "#";
+// read a live CSS custom property (so sparklines follow the active theme)
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 // Sparkline history lives client-side: the server only ever sends the latest
 // snapshot, and each open tab accumulates its own rolling window.
@@ -303,7 +435,7 @@ function render(s) {
   $("cpuPct").textContent = s.cpu.avg.toFixed(0);
   $("cpuFreq").textContent = s.cpu.freq_mhz || "–";
   cpuHist.push(s.cpu.avg); if (cpuHist.length > HIST) cpuHist.shift();
-  drawSpark($("cpuSpark"), cpuHist, "#38e1ff", true);
+  drawSpark($("cpuSpark"), cpuHist, cssVar("--spark_cpu"), true);
 
   if (!coreEls) {
     $("cores").innerHTML = s.cpu.cores.map((_,i) =>
@@ -344,7 +476,7 @@ function render(s) {
     h.push([v.rx, v.tx]); if (h.length > HIST) h.shift();
     const [rxEl, txEl] = ifaceEls[name].querySelectorAll(".row span span");
     rxEl.textContent = fmtRate(v.rx); txEl.textContent = fmtRate(v.tx);
-    drawSpark(ifaceEls[name].querySelector("canvas"), h, ["#38e1ff","#ff5fa8"]);
+    drawSpark(ifaceEls[name].querySelector("canvas"), h, [cssVar("--spark_cpu"), cssVar("--spark_tx")]);
   }
 
   // disks
@@ -374,25 +506,219 @@ function render(s) {
   }
 }
 
-/* ---------- branding ----------
-   Personal name lives in config.json (gitignored), not in source — so the
-   repo ships generic and each install brands itself. textContent, never
-   innerHTML, so a config value can't inject markup. */
-fetch("/api/config").then(r => r.json()).then(cfg => {
-  const name = ((cfg && cfg.name) || "").trim();
-  if (!name) return;  // no override -> keep the generic default already in HTML
-  $("brand").textContent = name;
-  document.title = name;
-  $("footer").textContent = name + " · zero-dependency stdlib python · sse live feed";
-}).catch(() => {});  // old image without /api/config -> stay on the generic default
+/* ====================================================================
+   AUTH + SETTINGS + THEME
+   The dashboard boots behind a login gate. /api/auth/status decides which
+   screen to show; only once authed do we fetch config/links and open the SSE
+   stream (the data endpoints are server-side gated too).
+   ==================================================================== */
 
-/* ---------- links ---------- */
-fetch("/api/links").then(r => r.json()).then(links => {
-  $("links").innerHTML = links.map(l =>
+const THEME_FIELDS = ["bg","text","dim","cyan","violet","pink","green","amber","red",
+                      "aurora1","aurora2","aurora3","spark_cpu","spark_tx"];
+const THEME_DEFAULTS = {bg:"#07080f",text:"#e8ecf4",dim:"#8d96ad",cyan:"#38e1ff",
+  violet:"#a06bff",pink:"#ff5fa8",green:"#3ddc84",amber:"#ffb454",red:"#ff5468",
+  aurora1:"#1450ff",aurora2:"#8a2bff",aurora3:"#00d4c0",spark_cpu:"#38e1ff",spark_tx:"#ff5fa8"};
+const ALERT_METRICS = [["temp","°C"],["cpu","%"],["mem","%"],["disk","%"]];
+
+// small JSON fetch wrapper; cookies ride along automatically (same-origin)
+async function api(method, path, body) {
+  const opt = { method };
+  if (body !== undefined) {
+    opt.headers = { "Content-Type": "application/json" };
+    opt.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, opt);
+  let data = null; try { data = await r.json(); } catch (e) {}
+  return { ok: r.ok, status: r.status, data };
+}
+
+function applyTheme(theme) {
+  if (!theme) return;
+  for (const k of THEME_FIELDS)
+    if (theme[k]) document.documentElement.style.setProperty("--" + k, theme[k]);
+}
+
+function applyBranding(name) {
+  name = (name || "").trim();
+  $("brand").textContent = name || "vitaldeck";
+  document.title = name || "vitaldeck";
+  $("footer").textContent = (name || "vitaldeck") + " · zero-dependency stdlib python · sse live feed";
+}
+
+function renderLinks(links) {
+  $("links").innerHTML = (links || []).map(l =>
     `<a href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener">
        <em>${esc(l.icon || "🔗")}</em><b>${esc(l.name)}</b><span>${esc(l.desc || "")}</span></a>`).join("")
-    || `<span style="color:var(--dim)">edit links.json to add services</span>`;
+    || `<span style="color:var(--dim)">add services in Settings → Links</span>`;
+}
+
+let started = false;
+async function startDashboard() {
+  $("authOverlay").hidden = true;
+  $("gear").hidden = false;
+  $("logoutBtn").hidden = false;
+  const cfg = await api("GET", "/api/config");
+  if (cfg.ok && cfg.data) { applyTheme(cfg.data.theme); applyBranding(cfg.data.name); }
+  const links = await api("GET", "/api/links");
+  if (links.ok) renderLinks(links.data);
+  if (started) return;           // SSE only once, even across re-auths
+  started = true;
+  connect();
+}
+
+/* ---------- auth gate ---------- */
+async function boot() {
+  const st = await api("GET", "/api/auth/status");
+  if (st.ok && st.data && st.data.authed) return startDashboard();
+  $("authOverlay").hidden = false;
+  const configured = st.ok && st.data && st.data.configured;
+  $("loginForm").hidden = !configured;
+  $("setupForm").hidden = !!configured;
+  (configured ? $("liUser") : $("suUser")).focus();
+}
+
+$("setupForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const u = $("suUser").value.trim(), p = $("suPass").value, p2 = $("suPass2").value;
+  if (p.length < 8) return $("suErr").textContent = "Password must be at least 8 characters.";
+  if (p !== p2) return $("suErr").textContent = "Passwords don't match.";
+  $("suBtn").disabled = true; $("suErr").textContent = "";
+  const r = await api("POST", "/api/setup", { user: u, password: p });
+  $("suBtn").disabled = false;
+  if (r.ok) startDashboard();
+  else $("suErr").textContent = (r.data && r.data.error) || "Setup failed.";
 });
+
+$("loginForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  $("liBtn").disabled = true; $("liErr").textContent = "";
+  const r = await api("POST", "/api/login",
+                      { user: $("liUser").value.trim(), password: $("liPass").value });
+  $("liBtn").disabled = false;
+  if (r.ok) startDashboard();
+  else $("liErr").textContent = (r.data && r.data.error) || "Login failed.";
+});
+
+$("logoutBtn").addEventListener("click", async () => {
+  await api("POST", "/api/logout");
+  location.reload();
+});
+
+/* ---------- settings modal ---------- */
+let committedTheme = {};   // theme as last saved, to revert an unsaved preview
+
+function openSettings() {
+  Promise.all([api("GET","/api/config"), api("GET","/api/links"), api("GET","/api/categories")])
+    .then(([c, l, cat]) => {
+      const cfg = c.data || {}, alerts = cfg.alerts || {};
+      $("setName").value = cfg.name || "";
+      // alert thresholds
+      $("alertGrid").innerHTML = ALERT_METRICS.map(([m, unit]) => {
+        const t = alerts[m] || {};
+        const v = x => (x === null || x === undefined) ? "" : x;
+        return `<label class="field"><span>${m} warn (${unit})</span><input type="number" step="any" id="al_${m}_warn" value="${v(t.warn)}"></label>
+                <label class="field"><span>${m} crit (${unit})</span><input type="number" step="any" id="al_${m}_crit" value="${v(t.crit)}"></label>`;
+      }).join("");
+      $("ctrToggle").checked = !((alerts.containers || {}).enabled === false);
+      $("minSev").value = ((alerts.webhook || {}).min_severity) || "crit";
+      // links + categories
+      $("linkRows").innerHTML = ""; (l.data || []).forEach(addLinkRow);
+      $("catRows").innerHTML = ""; (cat.data || []).forEach(addCatRow);
+      // theme: merge saved over defaults, build swatches, remember for revert
+      committedTheme = Object.assign({}, THEME_DEFAULTS, cfg.theme || {});
+      $("themeGrid").innerHTML = THEME_FIELDS.map(k =>
+        `<div class="swatch"><label>${k.replace("_"," ")}</label>
+           <input type="color" id="th_${k}" value="${committedTheme[k]}"></div>`).join("");
+      THEME_FIELDS.forEach(k => $("th_" + k).addEventListener("input", e =>
+        document.documentElement.style.setProperty("--" + k, e.target.value)));
+      $("saveMsg").textContent = "";
+      $("settings").hidden = false;
+    });
+}
+
+function addLinkRow(l) {
+  l = l || {};
+  const div = document.createElement("div");
+  div.className = "row link";
+  div.innerHTML =
+    `<input type="text" placeholder="name" value="${esc(l.name || "")}">
+     <input type="text" placeholder="https://…" value="${esc(l.url || "")}">
+     <input type="text" placeholder="description" value="${esc(l.desc || "")}">
+     <input type="text" placeholder="🔗" style="width:46px;text-align:center" value="${esc(l.icon || "")}">
+     <button class="del" type="button" title="remove">✕</button>`;
+  div.querySelector(".del").addEventListener("click", () => div.remove());
+  $("linkRows").appendChild(div);
+}
+
+function addCatRow(c) {
+  c = c || {};
+  const div = document.createElement("div");
+  div.className = "row cat";
+  div.innerHTML =
+    `<input type="text" placeholder="name" value="${esc(c.name || "")}">
+     <input type="text" placeholder="/home/user/containers/…" value="${esc(c.path || "")}">
+     <button class="del" type="button" title="remove">✕</button>`;
+  div.querySelector(".del").addEventListener("click", () => div.remove());
+  $("catRows").appendChild(div);
+}
+
+function closeSettings() {
+  applyTheme(committedTheme);     // discard any unsaved colour preview
+  $("settings").hidden = true;
+}
+
+async function saveSettings() {
+  const num = v => v.trim() === "" ? null : Number(v);
+  const alerts = { containers: { enabled: $("ctrToggle").checked },
+                   min_severity: $("minSev").value };
+  for (const [m] of ALERT_METRICS)
+    alerts[m] = { warn: num($("al_" + m + "_warn").value), crit: num($("al_" + m + "_crit").value) };
+  const theme = {};
+  THEME_FIELDS.forEach(k => theme[k] = $("th_" + k).value);
+  const config = { name: $("setName").value, alerts, theme };
+
+  const links = [...$("linkRows").children].map(r => {
+    const i = r.querySelectorAll("input");
+    return { name: i[0].value, url: i[1].value, desc: i[2].value, icon: i[3].value };
+  });
+  const cats = [...$("catRows").children].map(r => {
+    const i = r.querySelectorAll("input");
+    return { name: i[0].value, path: i[1].value };
+  });
+
+  $("saveBtn").disabled = true; $("saveMsg").textContent = "Saving…";
+  const [cr, lr, kr] = await Promise.all([
+    api("POST", "/api/config", config),
+    api("POST", "/api/links", links),
+    api("POST", "/api/categories", cats),
+  ]);
+  $("saveBtn").disabled = false;
+  if (cr.ok && lr.ok && kr.ok) {
+    committedTheme = Object.assign({}, theme);
+    applyTheme(theme); applyBranding(config.name);
+    const fresh = await api("GET", "/api/links"); if (fresh.ok) renderLinks(fresh.data);
+    $("saveMsg").textContent = "Saved ✓";
+  } else {
+    const err = [cr, lr, kr].map(x => x.data && x.data.error).find(Boolean);
+    $("saveMsg").textContent = err || "Save failed.";
+  }
+}
+
+$("gear").addEventListener("click", openSettings);
+$("settingsClose").addEventListener("click", closeSettings);
+$("settingsCancel").addEventListener("click", closeSettings);
+$("saveBtn").addEventListener("click", saveSettings);
+$("addLink").addEventListener("click", () => addLinkRow());
+$("addCat").addEventListener("click", () => addCatRow());
+$("resetTheme").addEventListener("click", () => {
+  THEME_FIELDS.forEach(k => { $("th_" + k).value = THEME_DEFAULTS[k];
+    document.documentElement.style.setProperty("--" + k, THEME_DEFAULTS[k]); });
+});
+document.querySelectorAll("#tabs .tab").forEach(t => t.addEventListener("click", () => {
+  document.querySelectorAll("#tabs .tab").forEach(x => x.classList.toggle("on", x === t));
+  document.querySelectorAll(".tabpane").forEach(p =>
+    p.hidden = p.dataset.pane !== t.dataset.tab);
+}));
 
 /* ---------- clock + SSE ---------- */
 setInterval(() => {
@@ -406,7 +732,8 @@ function connect() {
   es.onmessage = e => { $("live").classList.remove("dead"); render(JSON.parse(e.data)); };
   es.onerror = () => { $("live").classList.add("dead"); es.close(); setTimeout(connect, 3000); };
 }
-connect();
+
+boot();
 </script>
 </body>
 </html>

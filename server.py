@@ -8,10 +8,15 @@ container state, and streams everything to the browser over SSE.
     python3 server.py 9000       # custom port
 """
 
+import base64
 import copy
+import hashlib
+import hmac
+import http.cookies
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -22,6 +27,12 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+# Writable state lives here (links/config/categories + auth.json), separate from
+# the read-only app code in BASE. In Docker a named volume mounts at /app/data so
+# in-dashboard edits and the admin account survive container recreation. Defaults
+# to ./data for bare-metal runs. seed_data() fills it from the baked examples on
+# first launch, so a fresh install works with zero config files (Jellyfin-style).
+DATA = os.environ.get("DATA_DIR", os.path.join(BASE, "data"))
 # precedence: argv (bare-metal `python3 server.py 9000`) > $PORT (container
 # convention) > 8800. argv wins so the documented CLI usage still works.
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PORT", "8800"))
@@ -53,7 +64,23 @@ DEFAULTS = {
         "containers": {"enabled": True},
         "webhook": {"discord_url": "", "min_severity": "crit"},
     },
+    # UI colour palette, editable in the dashboard's Appearance settings. Each
+    # value is a CSS hex colour the frontend applies to a --css-variable. card /
+    # card_edge translucency stays fixed in the stylesheet (alpha isn't pickable
+    # with <input type=color>); these are the solid accents worth theming.
+    "theme": {
+        "bg": "#07080f", "text": "#e8ecf4", "dim": "#8d96ad",
+        "cyan": "#38e1ff", "violet": "#a06bff", "pink": "#ff5fa8",
+        "green": "#3ddc84", "amber": "#ffb454", "red": "#ff5468",
+        "aurora1": "#1450ff", "aurora2": "#8a2bff", "aurora3": "#00d4c0",
+        "spark_cpu": "#38e1ff", "spark_tx": "#ff5fa8",
+    },
 }
+
+# Allowed theme keys + the hex-colour shape the write path enforces, so a saved
+# value can never be anything but a colour (it's injected as live CSS).
+THEME_KEYS = set(DEFAULTS["theme"])
+HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 # none < warn < crit — lets the alert logic compare severities by rank.
 RANK = {"none": 0, "warn": 1, "crit": 2}
@@ -162,7 +189,7 @@ def load_categories():
     links.json).
     """
     try:
-        with open(os.path.join(BASE, "categories.json")) as f:
+        with open(data_path("categories.json")) as f:
             rules = json.load(f)
         return rules if isinstance(rules, list) else []
     except (OSError, ValueError):
@@ -218,6 +245,37 @@ def docker_ps():
         return None
 
 
+# ------------------------------------------------------------ data dir / seed
+
+# Runtime files that live in DATA, each seeded from a baked example in BASE.
+SEED_FILES = {
+    "links.json": "links.example.json",
+    "config.json": "config.example.json",
+    "categories.json": "categories.example.json",
+}
+
+
+def data_path(name):
+    """Absolute path to a runtime file inside the writable DATA dir."""
+    return os.path.join(DATA, name)
+
+
+def seed_data():
+    """Ensure DATA exists and is populated so a fresh install just works.
+
+    Copies each baked *.example.json into DATA only when the target is absent,
+    so it never clobbers a user's edits on later boots. This is what makes the
+    container zero-config: with the old per-file bind mounts a missing file
+    crashed startup, but a named volume + seeding gives working defaults that
+    then persist. auth.json is NOT seeded — it's created by the setup wizard.
+    """
+    os.makedirs(DATA, exist_ok=True)
+    for target, example in SEED_FILES.items():
+        dest, src = data_path(target), os.path.join(BASE, example)
+        if not os.path.exists(dest) and os.path.exists(src):
+            shutil.copyfile(src, dest)
+
+
 def load_config():
     """Merged config: config.json overlaid on DEFAULTS, read fresh each call.
 
@@ -228,7 +286,7 @@ def load_config():
     """
     cfg = copy.deepcopy(DEFAULTS)
     try:
-        with open(os.path.join(BASE, "config.json")) as f:
+        with open(data_path("config.json")) as f:
             user = json.load(f)
     except (OSError, ValueError):
         user = {}
@@ -255,17 +313,275 @@ def public_config(cfg):
     raw config must never leave the server. Return a NEW dict containing only
     the fields the frontend actually consumes; never mutate `cfg`.
 
-    Exposes the display name plus the alert thresholds (handy for the UI to
-    colour gauges by the configured warn/crit one day) — but everything under
-    alerts.webhook is dropped, since that's where the Discord secret lives.
-    The return is an allow-list at the top level — only "name" and "alerts"
-    are ever emitted, so a new top-level secret in config can't leak by
-    default — and within "alerts" the webhook block is dropped explicitly.
+    Exposes the display name, alert thresholds, and theme. Within alerts the
+    whole webhook block is dropped EXCEPT min_severity (which the settings UI
+    needs to show/edit) — the Discord URL, the actual secret, is never emitted.
+    The return is a top-level allow-list ("name"/"alerts"/"theme"), so a new
+    top-level secret in config can't leak by default.
     """
     alerts = cfg.get("alerts", {}) if isinstance(cfg, dict) else {}
     safe_alerts = {k: v for k, v in alerts.items() if k != "webhook"}
+    wh = alerts.get("webhook", {})
+    if isinstance(wh, dict) and "min_severity" in wh:
+        # min_severity is not a secret; surface only it, never discord_url
+        safe_alerts["webhook"] = {"min_severity": wh.get("min_severity")}
     return {"name": cfg.get("name", "") if isinstance(cfg, dict) else "",
-            "alerts": safe_alerts}
+            "alerts": safe_alerts,
+            "theme": cfg.get("theme", {}) if isinstance(cfg, dict) else {}}
+
+
+# ------------------------------------------------------------------- auth
+#
+# Jellyfin/Sonarr-style local auth, pure stdlib: a first-run wizard creates one
+# admin account whose salted PBKDF2 hash lives in DATA/auth.json. Sessions are
+# stateless, signed cookies — an HMAC over "user|expiry" keyed by a random secret
+# that's persisted alongside the hash, so logins survive restarts without any
+# server-side session store. No password ever touches an env var or the repo.
+
+PBKDF2_ITER = 200_000
+SESSION_TTL = 7 * 24 * 3600   # seconds a login cookie stays valid
+COOKIE_NAME = "vd_session"
+
+
+def _pbkdf2(password, salt, iterations):
+    """Derive the raw password hash. Single source of truth so the setup path
+    and the verify path always agree on the algorithm and parameters."""
+    return hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+
+
+def load_auth():
+    """The admin record dict, or None if no account has been created yet."""
+    try:
+        with open(data_path("auth.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def save_auth(record):
+    """Persist the admin record. 0o600 because it holds the password hash and
+    the cookie-signing secret — both sensitive even at rest."""
+    path = data_path("auth.json")
+    with open(path, "w") as f:
+        json.dump(record, f)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass  # best-effort (e.g. odd filesystems); the volume is already private
+
+
+def is_configured():
+    """True once an admin account exists (drives setup-vs-login in the UI)."""
+    return load_auth() is not None
+
+
+def create_admin(user, password):
+    """Build and persist the one admin account: a salted PBKDF2 hash plus a
+    fresh random HMAC secret used to sign session cookies."""
+    salt = secrets.token_bytes(16)
+    record = {
+        "user": user,
+        "salt": salt.hex(),
+        "hash": _pbkdf2(password, salt, PBKDF2_ITER).hex(),
+        "iterations": PBKDF2_ITER,
+        "secret": secrets.token_hex(32),
+    }
+    save_auth(record)
+    return record
+
+
+def verify_password(password, record):
+    """Return True iff `password` matches the stored admin hash in `record`.
+
+    `record` is a dict from load_auth() with hex-encoded "salt" and "hash" and
+    an int "iterations". Re-derive the hash from the supplied password using the
+    SAME salt/iterations (helper: `_pbkdf2(password, salt_bytes, iterations)`),
+    then compare it to the stored hash.
+
+    Convert the hex "salt"/"hash" back to bytes, re-derive the candidate hash
+    with the SAME salt and iteration count, and compare with hmac.compare_digest
+    — a plain `==` on secret material leaks length/prefix info through timing,
+    exactly the side channel constant-time comparison exists to close.
+    """
+    if not isinstance(record, dict):
+        return False
+    try:
+        salt = bytes.fromhex(record["salt"])
+        stored = bytes.fromhex(record["hash"])
+        iterations = int(record["iterations"])
+    except (KeyError, ValueError, TypeError):
+        return False
+    candidate = _pbkdf2(password, salt, iterations)
+    return hmac.compare_digest(candidate, stored)
+
+
+def _secret_bytes(record):
+    return bytes.fromhex(record["secret"])
+
+
+def make_session(record):
+    """Mint a signed session token: base64url("user|expiry") + "." + HMAC sig."""
+    expiry = int(time.time()) + SESSION_TTL
+    payload = base64.urlsafe_b64encode(
+        f"{record['user']}|{expiry}".encode()).decode().rstrip("=")
+    sig = hmac.new(_secret_bytes(record), payload.encode(),
+                   hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def check_session(token):
+    """Validate a session token; return the username or None.
+
+    Stateless: verify the HMAC signature against the persisted secret, then the
+    embedded expiry. Constant-time signature compare so a forged cookie can't be
+    brute-forced byte-by-byte via timing.
+    """
+    record = load_auth()
+    if not record or not token or "." not in token:
+        return None
+    payload, _, sig = token.partition(".")
+    expected = hmac.new(_secret_bytes(record), payload.encode(),
+                        hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        user, _, exp = raw.decode().partition("|")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not exp.isdigit() or int(exp) < time.time():
+        return None
+    return user if user == record.get("user") else None
+
+
+# ------------------------------------------------------ validated writes
+#
+# Everything below persists browser-supplied data into DATA. The dashboard has
+# no per-field trust, so each writer re-validates: links get URL-scheme checks,
+# config coerces numeric thresholds and PRESERVES the webhook secret (never
+# accepting one from the client), and theme values must be hex colours.
+
+URL_OK = re.compile(r"^(https?:|ssh:|/|#)", re.I)
+
+
+def write_json(name, obj):
+    """Atomically replace DATA/<name> with obj (write-temp-then-rename), so a
+    crash mid-write can't leave a half-written config the loaders would reject."""
+    path = data_path(name)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=2)
+    os.replace(tmp, path)
+
+
+def load_raw_config():
+    """The on-disk config.json as-is (NOT merged with DEFAULTS), so writers can
+    preserve fields the UI never sends — above all alerts.webhook."""
+    try:
+        with open(data_path("config.json")) as f:
+            c = json.load(f)
+        return c if isinstance(c, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def safe_url(u):
+    """Mirror the frontend's safeUrl: keep http(s)/ssh/relative/anchor, else #."""
+    s = str(u or "").strip()
+    return s if URL_OK.match(s) else "#"
+
+
+def sanitize_links(incoming):
+    """Validate a links payload into a clean list, or return (None, error)."""
+    if not isinstance(incoming, list):
+        return None, "links must be a list"
+    out = []
+    for item in incoming:
+        if not isinstance(item, dict):
+            return None, "each link must be an object"
+        name = str(item.get("name", "")).strip()[:80]
+        if not name:
+            continue  # drop blank rows rather than error
+        out.append({
+            "name": name,
+            "url": safe_url(item.get("url", "")),
+            "desc": str(item.get("desc", "")).strip()[:120],
+            "icon": str(item.get("icon", "")).strip()[:8] or "🔗",
+        })
+    return out, None
+
+
+def sanitize_categories(incoming):
+    """Validate a categories payload into a clean list, or (None, error)."""
+    if not isinstance(incoming, list):
+        return None, "categories must be a list"
+    out = []
+    for item in incoming:
+        if not isinstance(item, dict):
+            return None, "each category must be an object"
+        name = str(item.get("name", "")).strip()[:80]
+        path = str(item.get("path", "")).strip()[:255]
+        if name and path:
+            out.append({"name": name, "path": path})
+    return out, None
+
+
+def _num_or_none(v):
+    """A threshold is a non-negative number, or None to disable that level."""
+    if v is None:
+        return True, None
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False, None
+    return (0 <= v <= 1000), v
+
+
+def sanitize_config(incoming):
+    """Merge a validated settings payload onto the on-disk config and return
+    (config_to_persist, None), or (None, error).
+
+    Preserves alerts.webhook from disk no matter what the client sends — the
+    Discord secret is intentionally not editable from the browser.
+    """
+    if not isinstance(incoming, dict):
+        return None, "config must be an object"
+    cfg = copy.deepcopy(load_raw_config())
+    alerts = cfg.setdefault("alerts", {})
+
+    if "name" in incoming:
+        cfg["name"] = str(incoming.get("name") or "").strip()[:64]
+
+    a = incoming.get("alerts")
+    if isinstance(a, dict):
+        for metric in ("temp", "cpu", "mem", "disk"):
+            sub = a.get(metric)
+            if not isinstance(sub, dict):
+                continue
+            cur = alerts.get(metric) if isinstance(alerts.get(metric), dict) else {}
+            for level in ("warn", "crit"):
+                if level in sub:
+                    ok, val = _num_or_none(sub[level])
+                    if not ok:
+                        return None, f"alerts.{metric}.{level} must be a number or null"
+                    cur[level] = val
+            alerts[metric] = cur
+        if isinstance(a.get("containers"), dict) and "enabled" in a["containers"]:
+            alerts.setdefault("containers", {})["enabled"] = bool(a["containers"]["enabled"])
+        if "min_severity" in a:
+            if a["min_severity"] not in ("warn", "crit"):
+                return None, "min_severity must be 'warn' or 'crit'"
+            alerts.setdefault("webhook", {})["min_severity"] = a["min_severity"]
+
+    t = incoming.get("theme")
+    if isinstance(t, dict):
+        theme = cfg.setdefault("theme", {})
+        for key, val in t.items():
+            if key not in THEME_KEYS:
+                continue  # ignore unknown keys silently
+            if not (isinstance(val, str) and HEX_RE.match(val)):
+                return None, f"theme.{key} must be a #rrggbb hex colour"
+            theme[key] = val
+
+    return cfg, None
 
 
 def severity_of(value, warn, crit):
@@ -542,7 +858,9 @@ SAMPLER = Sampler()
 # ------------------------------------------------------------------ server
 
 class Handler(BaseHTTPRequestHandler):
-    """Routes: / (UI) · /api/stats · /api/links · /events (SSE stream).
+    """Routes — public: / (UI shell) · /api/health · /api/auth/status ·
+    POST /api/setup|login|logout. Auth-gated: /api/stats · /api/links ·
+    /api/categories · /api/config (GET+POST) · /events (SSE).
 
     ThreadingHTTPServer gives each request its own thread, which is what
     lets long-lived /events connections coexist with normal page loads.
@@ -552,40 +870,147 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
 
-    def _send(self, code, body, ctype="text/plain; charset=utf-8"):
+    def _send(self, code, body, ctype="text/plain; charset=utf-8", headers=()):
         data = body if isinstance(body, bytes) else body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in headers:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
 
+    def _json(self, code, obj, headers=()):
+        self._send(code, json.dumps(obj), "application/json", headers)
+
+    def _body(self):
+        """Parse a JSON request body, or None if absent/oversized/malformed."""
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            return None
+        if n <= 0 or n > 1_000_000:  # 1 MB ceiling — these are tiny config blobs
+            return None
+        try:
+            return json.loads(self.rfile.read(n).decode())
+        except (ValueError, UnicodeDecodeError):
+            return None
+
+    def _authed(self):
+        """Username from a valid session cookie, or None."""
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+        try:
+            jar = http.cookies.SimpleCookie(raw)
+        except http.cookies.CookieError:
+            return None
+        morsel = jar.get(COOKIE_NAME)
+        return check_session(morsel.value) if morsel else None
+
+    def _cookie(self, token, max_age):
+        # HttpOnly: JS can't read it (blunts XSS cookie theft). SameSite=Strict:
+        # not sent on cross-site requests (CSRF defence). No Secure flag — the
+        # dashboard commonly runs over plain HTTP on a LAN; a TLS reverse proxy
+        # can add it. max_age=0 with an empty token clears the cookie (logout).
+        return ("Set-Cookie",
+                f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; "
+                f"Max-Age={max_age}")
+
     def do_GET(self):
         path = self.path.split("?")[0]
+        # --- public: the page shell, the healthcheck, and auth state ---
         if path == "/":
             with open(os.path.join(BASE, "static", "index.html"), "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
-        elif path == "/api/stats":
-            self._send(200, json.dumps(SAMPLER.get()), "application/json")
+            return
+        if path == "/api/health":          # liveness probe — no auth (the Docker
+            self._json(200, {"ok": True})  # HEALTHCHECK can't log in)
+            return
+        if path == "/api/auth/status":
+            self._json(200, {"configured": is_configured(),
+                             "authed": bool(self._authed())})
+            return
+        # --- everything below requires a valid session ---
+        if not self._authed():
+            self._json(401, {"error": "auth required"})
+            return
+        if path == "/api/stats":
+            self._json(200, SAMPLER.get())
         elif path == "/api/links":
-            # read from disk on every request so links.json edits apply on
-            # page refresh without a restart
             try:
-                with open(os.path.join(BASE, "links.json"), "rb") as f:
+                with open(data_path("links.json"), "rb") as f:
                     self._send(200, f.read(), "application/json")
             except OSError:
-                self._send(200, "[]", "application/json")
+                self._json(200, [])
+        elif path == "/api/categories":
+            self._json(200, load_categories())
         elif path == "/api/config":
-            # merged config (defaults + config.json), re-read per request so
-            # the browser picks up threshold edits on refresh. public_config()
-            # strips secrets (the webhook URL) before it goes over the wire.
-            self._send(200, json.dumps(public_config(load_config())),
-                       "application/json")
+            # public_config() strips the webhook URL before it goes over the wire
+            self._json(200, public_config(load_config()))
         elif path == "/events":
             self._sse()
         else:
             self._send(404, "not found")
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        # --- public auth endpoints ---
+        if path == "/api/setup":
+            return self._do_setup()
+        if path == "/api/login":
+            return self._do_login()
+        if path == "/api/logout":
+            return self._json(200, {"ok": True}, [self._cookie("", 0)])
+        # --- writes require a valid session ---
+        if not self._authed():
+            return self._json(401, {"error": "auth required"})
+        body = self._body()
+        if body is None:
+            return self._json(400, {"error": "invalid JSON body"})
+        if path == "/api/links":
+            data, err = sanitize_links(body)
+            fname = "links.json"
+        elif path == "/api/categories":
+            data, err = sanitize_categories(body)
+            fname = "categories.json"
+        elif path == "/api/config":
+            data, err = sanitize_config(body)
+            fname = "config.json"
+        else:
+            return self._send(404, "not found")
+        if err:
+            return self._json(400, {"error": err})
+        write_json(fname, data)
+        # echo the (secret-stripped) config back so the UI re-syncs; ok for rest
+        if path == "/api/config":
+            return self._json(200, public_config(load_config()))
+        self._json(200, {"ok": True})
+
+    def _do_setup(self):
+        """First-run only: create the single admin account and log them in."""
+        if is_configured():
+            return self._json(409, {"error": "already configured"})
+        body = self._body() or {}
+        user = str(body.get("user", "")).strip()
+        pw = str(body.get("password", ""))
+        if not user or len(pw) < 8:
+            return self._json(400, {"error": "username required; password "
+                                             "must be at least 8 characters"})
+        record = create_admin(user, pw)
+        self._json(200, {"ok": True}, [self._cookie(make_session(record),
+                                                    SESSION_TTL)])
+
+    def _do_login(self):
+        body = self._body() or {}
+        record = load_auth()
+        user = str(body.get("user", "")).strip()
+        pw = str(body.get("password", ""))
+        if record and user == record.get("user") and verify_password(pw, record):
+            return self._json(200, {"ok": True},
+                              [self._cookie(make_session(record), SESSION_TTL)])
+        self._json(401, {"error": "invalid username or password"})
 
     def _sse(self):
         """Server-Sent Events: push the snapshot every TICK seconds, forever.
@@ -631,6 +1056,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    # populate the writable data dir from the baked defaults before anything
+    # reads it — this is what lets a fresh install boot with no config files
+    seed_data()
     # wait for the first sample so the page never renders empty
     while not SAMPLER.get():
         time.sleep(0.1)

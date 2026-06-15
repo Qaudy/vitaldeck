@@ -9,3 +9,6 @@ vitaldeck.service
 links.json
 # holds the Discord webhook secret; the image bakes config.example.json instead
 config.json
+categories.json
+# bare-metal runtime state (incl. the admin auth.json) — never into the image
+data/

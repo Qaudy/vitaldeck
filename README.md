@@ -24,6 +24,9 @@ Panels:
 - **Quick links** — a configurable grid of links to your services
 - **Alerts** — optional Discord webhook notifications on threshold breaches and
   container start/stop
+- **Login + in-dashboard settings** — a first-run setup wizard creates an admin
+  account; links, alert thresholds, container categories, and a full colour theme
+  are all edited in the browser and persisted (no config files to touch)
 
 ![screenshot](docs/screenshot.png)
 
@@ -47,17 +50,8 @@ Panels:
 
 ### Option A — No clone needed (easiest)
 
-Create a folder anywhere on your Linux host, drop in three config files, and
-point Docker Compose at the pre-built image:
-
-```bash
-mkdir vitaldeck && cd vitaldeck
-cp /path/to/config.example.json  config.json   # or create from scratch
-cp /path/to/links.example.json   links.json
-cp /path/to/categories.example.json categories.json
-```
-
-Then create a `docker-compose.yaml` with the following contents and run it:
+No config files to prepare. Create a folder anywhere on your Linux host, drop in
+this `docker-compose.yaml`, and start it:
 
 ```yaml
 services:
@@ -70,29 +64,32 @@ services:
       HOST_PROC: /host/proc
       HOST_SYS: /host/sys
       HOST_ROOT: /host/root
+      DATA_DIR: /app/data
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/host/root:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./links.json:/app/links.json:ro
-      - ./categories.json:/app/categories.json:ro
-      - ./config.json:/app/config.json:ro
+      - vitaldeck-data:/app/data      # settings + your login persist here
+
+volumes:
+  vitaldeck-data:
 ```
 
 ```bash
 docker compose up -d
 ```
 
-Then open **http://&lt;host-ip&gt;:8800**.
+Then open **http://&lt;host-ip&gt;:8800**. On first launch you'll be asked to
+**create an admin account** (setup wizard); after that you log in, and
+everything — links, alert thresholds, container categories, and colours — is
+edited right in the dashboard under the **⚙ settings** button. No files to
+touch.
 
 ### Option B — Clone the repo
 
 ```bash
 git clone https://github.com/Qaudy/vitaldeck.git && cd vitaldeck
-cp config.example.json config.json
-cp links.example.json links.json
-cp categories.example.json categories.json
 docker compose up -d
 ```
 
@@ -105,7 +102,9 @@ docker compose down          # stop and remove
 > `docker-compose.yaml` and swap `image:` for `build: .`.
 
 The compose file mounts the host's `/proc`, `/sys`, `/` (all read-only) plus the
-Docker socket, so the container reports **host** stats — not its own sandbox.
+Docker socket, so the container reports **host** stats — not its own sandbox. The
+`vitaldeck-data` named volume holds all your settings and the admin account, so
+they survive `docker compose up -d --force-recreate` and image updates.
 
 ### Bare metal
 
@@ -118,96 +117,67 @@ No dependencies beyond the Python 3.10+ standard library.
 
 ---
 
-## Configuration — `config.json`
+## Configuration — in the dashboard
+
+Everything is edited under the **⚙ settings** button (top-right) and saved to the
+`vitaldeck-data` volume — no files, no restart. The panel has five tabs:
+
+| Tab | What you set |
+|---|---|
+| **General** | Dashboard name / brand (the label in alert messages too; blank = hostname). |
+| **Alerts** | `warn`/`crit` thresholds for temp (°C), CPU/memory/disk (%); container start-stop toggle; webhook minimum severity. Leave a threshold blank to disable that level. |
+| **Links** | The quick-links grid — name, URL, description, emoji icon. Add/remove rows. |
+| **Categories** | Container grouping rules — a display name mapped to a host path. |
+| **Appearance** | The full colour theme — see below. |
+
+Under the hood these are stored as `config.json`, `links.json`, and
+`categories.json` inside the data volume. You *can* edit those files directly
+(e.g. `docker compose exec vitaldeck vi /app/data/config.json`) but the dashboard
+is the intended path.
+
+### Discord webhook
+
+The webhook URL is the one setting **not** editable in the dashboard — it's a
+write-capability secret (anyone with it can post to your channel), and the
+dashboard has no per-user trust, so exposing it in the UI would let anyone who
+can open the page read it. Set it directly in the data volume:
 
 ```bash
-cp config.example.json config.json
+docker compose exec vitaldeck vi /app/data/config.json
+# set alerts.webhook.discord_url to your "https://discord.com/api/webhooks/…" URL
 ```
 
-Edit it and refresh the page — `config.json` is re-read live on each request, so
-there's no restart needed. **It is gitignored** (it can hold a secret webhook
-URL) and must never be committed.
+To get the URL: in Discord, **Server Settings → Integrations → Webhooks → New
+Webhook → Copy Webhook URL**. Set `alerts.webhook.min_severity` (`"warn"` or
+`"crit"`) in the Alerts tab. The next threshold breach — or container start/stop,
+if enabled — posts to your channel.
 
-Full example:
-
-```json
-{
-  "name": "",
-  "alerts": {
-    "temp": { "warn": 70, "crit": 85 },
-    "cpu":  { "warn": 85, "crit": 95 },
-    "mem":  { "warn": 80, "crit": 92 },
-    "disk": { "warn": 80, "crit": 92 },
-    "containers": { "enabled": true },
-    "webhook": {
-      "discord_url": "",
-      "min_severity": "crit"
-    }
-  }
-}
-```
-
-Every field:
-
-| Field | Meaning |
-|---|---|
-| `name` | Dashboard title / brand, and the label used in alert messages. Empty = fall back to the host's hostname. |
-| `alerts.temp.warn` / `.crit` | Temperature thresholds in **°C absolute**. |
-| `alerts.cpu.warn` / `.crit` | CPU thresholds as a **percentage**. |
-| `alerts.mem.warn` / `.crit` | Memory thresholds as a **percentage**. |
-| `alerts.disk.warn` / `.crit` | Disk-usage thresholds as a **percentage**. |
-| `alerts.containers.enabled` | `true`/`false` — toggle container start/stop notifications. |
-| `alerts.webhook.discord_url` | Discord webhook URL (see below). |
-| `alerts.webhook.min_severity` | `"warn"` or `"crit"` — the minimum severity that triggers a webhook post. Default `"crit"`. |
-
-Set any individual threshold level to `null` to disable just that level.
-
----
-
-## Configuration — Discord webhook (step by step)
-
-1. In Discord, open **Server Settings → Integrations → Webhooks → New Webhook**.
-2. Name it, pick the target channel, and click **Copy Webhook URL**.
-3. Paste it into `config.json` as `alerts.webhook.discord_url`.
-4. Set `min_severity` (`"crit"` is recommended to start, so you only get paged on
-   serious breaches).
-5. Refresh the dashboard. The next threshold breach — or container start/stop, if
-   enabled — posts to your channel.
-
-> **Security note:** the webhook URL is a *write-capability secret* — anyone who
-> has it can post to your channel. It lives only in `config.json`, which is
-> gitignored, so **never commit it**. The server strips the webhook URL out of
-> the public `/api/config` endpoint automatically, so it never reaches the
-> browser.
+> The server strips the webhook URL out of the `/api/config` response, so it
+> never reaches the browser; only its `min_severity` is exposed.
 
 ---
 
 ## Configuration — colors & theming
 
-There is **no color option in `config.json`**. Theming is done by editing
-`static/index.html` and rebuilding (`docker compose up -d --build`).
+Open **⚙ settings → Appearance** and use the colour pickers. Changes preview
+live; **Save changes** persists them, **Reset to defaults** restores the shipped
+palette. Closing without saving reverts the preview.
 
-The palette lives in the `:root` block at the top of the file:
+The theme covers every coloured element:
 
-| Variable | Drives |
+| Picker | Drives |
 |---|---|
-| `--bg` | Page background |
-| `--card` / `--card-edge` | The frosted-glass cards |
-| `--text` / `--dim` | Primary and muted text |
-| `--cyan` / `--violet` / `--pink` | Accent gradient — logo, sparklines, bars |
-| `--green` / `--amber` / `--red` | Gauge "fullness" ramp |
-| `--mono` | Monospace font stack |
+| `bg` | Page background |
+| `text` / `dim` | Primary and muted text |
+| `cyan` / `violet` / `pink` | Accent gradient — logo, bars |
+| `green` / `amber` / `red` | Gauge "fullness" ramp |
+| `aurora1` / `aurora2` / `aurora3` | The three drifting background blobs |
+| `spark_cpu` / `spark_tx` | The sparkline line colours |
 
-Two things are **not** driven by these variables and must be edited directly for
-a full re-theme:
-
-- The three aurora background blobs are hard-coded hex values in the
-  `.aurora i:nth-child(...)` CSS rules.
-- The sparkline line colors are hard-coded in the JS (`#38e1ff` for CPU; `#38e1ff`
-  / `#ff5fa8` for network rx/tx).
-
-The dashboard **name/brand** comes from `config.json` `name` at runtime — no
-rebuild needed for that one.
+Themes are stored as hex colours under `theme` in the data volume's
+`config.json` and validated server-side. The frosted-glass card translucency and
+the monospace font stay fixed. The dashboard **name/brand** is set in the General
+tab.
 
 ---
 
@@ -226,40 +196,17 @@ These are source-level knobs; most require a rebuild/restart.
 
 ---
 
-## Quick links — `links.json`
+## Quick links & container grouping
 
-```bash
-cp links.example.json links.json
-```
+Both are edited in **⚙ settings** (the **Links** and **Categories** tabs) and
+persist to the data volume.
 
-An array of `{ "name", "url", "desc", "icon" }` entries (`icon` is an emoji,
-default 🔗):
-
-```json
-{ "name": "Router", "url": "http://192.168.1.1", "desc": "router admin", "icon": "📡" }
-```
-
-Bind-mounted into the container and re-read on page refresh — no rebuild.
-Gitignored.
-
----
-
-## Container grouping — `categories.json`
-
-```bash
-cp categories.example.json categories.json
-```
-
-An array of `{ "name", "path" }` rules:
-
-```json
-{ "name": "Media Stack", "path": "/home/user/containers/media" }
-```
-
-A container is grouped under a rule when its Docker Compose working directory
-**equals or sits under** that path. Anything unmatched falls under "Other". New
-services added beneath a configured path are picked up automatically. Like the
-other config files, it's live-reloaded and gitignored.
+- **Links** — each entry is a name, URL, description, and emoji icon (default
+  🔗). URLs are scheme-checked (only `http(s)`/`ssh`/relative allowed).
+- **Categories** — each rule maps a display name to a host path. A container is
+  grouped under a rule when its Docker Compose working directory **equals or sits
+  under** that path; anything unmatched falls under "Other". New services added
+  beneath a configured path are picked up automatically.
 
 ---
 
@@ -268,8 +215,11 @@ other config files, it's live-reloaded and gitignored.
 - **`network_mode: host` is required** so `/proc/net/dev` sees the host's real
   interfaces (and so the dashboard is reachable on `:8800` without a port map).
 - The host's `/proc`, `/sys`, `/`, and the Docker socket are mounted **read-only**.
+- The `vitaldeck-data` named volume holds your settings + admin account; back it
+  up to keep them. Delete it to reset to a fresh setup wizard.
 - `restart: unless-stopped` brings the dashboard back after reboots.
-- A `HEALTHCHECK` in the Dockerfile lets the runtime know the server is alive.
+- A `HEALTHCHECK` hits the public `/api/health` endpoint so the runtime knows the
+  server is alive.
 
 ---
 
@@ -283,35 +233,42 @@ cp .env.example .env          # paste your tunnel token into CLOUDFLARE_TUNNEL_T
 docker compose --profile tunnel up -d
 ```
 
-> **⚠️ Warning:** this exposes an **unauthenticated** dashboard to the public
-> internet. Read the Security section first. The image tag is pinned — bump it to
-> a current release from
+> **⚠️ Warning:** even with the login, exposing the dashboard to the public
+> internet widens its attack surface. Read the Security section first. The image
+> tag is pinned — bump it to a current release from
 > [Docker Hub](https://hub.docker.com/r/cloudflare/cloudflared/tags) as needed.
 
 ---
 
 ## Security
 
-vitaldeck serves **raw host telemetry and container names with no
-authentication.** Treat it accordingly:
+vitaldeck has a built-in login: a first-run wizard creates one admin account
+(salted PBKDF2 hash stored in the data volume), and all telemetry and settings
+endpoints require a signed-cookie session. That's a real gate — but understand
+its limits:
 
-- Keep it on a trusted LAN or a private overlay (e.g. Tailscale), **or** put
-  authentication in front of any public tunnel.
+- The auth is a small, hand-rolled stdlib implementation (to keep the
+  zero-dependency promise). It's appropriate for a trusted LAN or a private
+  overlay (e.g. Tailscale). For **direct internet exposure**, still put a
+  battle-tested reverse proxy with its own auth in front.
 - The **Docker socket is root-equivalent.** Mounting it `:ro` only protects the
-  socket *file*, not the Docker API behind it — anyone who can reach the API can
-  effectively control the host.
+  socket *file*, not the Docker API behind it — anyone who reaches the API (i.e.
+  anyone who gets a session) can effectively control the host.
+- There's no rate-limiting on login attempts; rely on the network boundary or a
+  proxy for brute-force protection on exposed deployments.
 
 **Hardening checklist for deployers:**
 
-- Front the dashboard with a reverse proxy that enforces authentication.
+- Front the dashboard with a reverse proxy (TLS + its own auth) for anything
+  public; the dashboard sets no `Secure` cookie flag itself since it commonly
+  runs over plain HTTP on a LAN.
 - Use a read-only Docker-socket proxy (e.g. Tecnativa's `docker-socket-proxy`)
   instead of mounting the raw socket.
 - Optionally run the container as a non-root user that belongs to the correct
   `docker` group. (Not done by default: the container must read the socket, and a
   wrong GID silently breaks the container panel.)
-- Cap concurrent SSE connections if the dashboard is exposed — the server streams
-  one long-lived connection per open tab, which is a potential DoS surface on an
-  untrusted network.
+- The server caps concurrent SSE streams (`MAX_SSE` in `server.py`) to blunt a
+  connection-flood DoS.
 
 ---
 
@@ -319,16 +276,17 @@ authentication.** Treat it accordingly:
 
 PRs welcome. A few conventions:
 
-- The repo ships **templates** — `config.example.json`, `links.example.json`,
-  `categories.example.json`, and `.env.example`. The real `config.json`,
-  `links.json`, `categories.json`, and `.env` are **gitignored and must never be
-  committed** (they hold secrets and personal paths).
-- To run locally for testing: `python3 server.py` and open
-  `http://localhost:8800`. No dependencies to install.
+- The repo ships **seed templates** — `config.example.json`, `links.example.json`,
+  `categories.example.json` — which the server copies into the data dir on first
+  run. Live runtime files (and the admin `auth.json`) live in the data volume,
+  never in the repo. `.env` (tunnel token only) stays gitignored.
+- To run locally for testing: `python3 server.py` then open
+  `http://localhost:8800` (writes to `./data/`). No dependencies to install.
 - The frontend is a single file with no build step — edit `static/index.html`
   directly. All values coming from config or the host are HTML-escaped via the
   `esc()` / `safeUrl()` helpers before they touch `innerHTML`; keep new dynamic
-  output behind them.
+  output behind them. New write endpoints must re-validate input server-side
+  (see `sanitize_*` in `server.py`).
 
 ---
 
@@ -354,4 +312,6 @@ This is a personal project shared with the community. It is not for commercial d
 | **Containers panel says docker unavailable** | The Docker socket isn't mounted, or `docker` isn't installed/running on the host. |
 | **No temperature shown** | This hardware has no `/sys/class/thermal/thermal_zone0` — point the reader at a different thermal zone in `server.py`. |
 | **Can't change the port in Docker** | Host networking has no port map; set the `PORT` env var instead of mapping ports. |
-| **Brand flashes the default name first** | Expected — `config.json` is fetched after the first paint, so the title updates a moment later. |
+| **Forgot the admin password** | Delete the data volume (`docker compose down && docker volume rm <project>_vitaldeck-data`) to reset to the setup wizard — note this clears all settings too. Or `docker compose exec vitaldeck rm /app/data/auth.json` and restart to re-run setup while keeping settings. |
+| **Setup wizard reappears after recreate** | The `vitaldeck-data` volume isn't persisting — check the `volumes:` block is present and you're not running with `--volumes`/an anonymous mount. |
+| **Logged out after an image update** | Only if the data volume was recreated — sessions are signed by a secret stored in that volume. |

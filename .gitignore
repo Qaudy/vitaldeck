@@ -10,6 +10,10 @@ categories.json
 # instance config — holds the Discord webhook URL (a secret) + thresholds
 config.json
 
+# bare-metal runtime state: seeded config + the admin auth.json (password hash).
+# In Docker this lives in a named volume; never commit it.
+data/
+
 __pycache__/
 *.pyc
 

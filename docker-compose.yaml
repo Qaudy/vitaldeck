@@ -12,16 +12,17 @@ services:
       HOST_PROC: /host/proc
       HOST_SYS: /host/sys
       HOST_ROOT: /host/root
+      # where the dashboard stores links/config/categories + the admin account
+      DATA_DIR: /app/data
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/host/root:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      # live-edit your links without rebuilding the image
-      - ./links.json:/app/links.json:ro
-      - ./categories.json:/app/categories.json:ro
-      # alert thresholds + Discord webhook (cp config.example.json config.json)
-      - ./config.json:/app/config.json:ro
+      # persistent state: settings edited in the dashboard + your login survive
+      # `docker compose up -d --force-recreate` and image updates. No file prep
+      # needed — first run seeds defaults into the volume automatically.
+      - vitaldeck-data:/app/data
 
 
   cloudflared:
@@ -38,7 +39,11 @@ services:
       - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
     networks:
       - tunnel
+
 networks:
   tunnel:
     driver: bridge
+
+volumes:
+  vitaldeck-data:
 
