@@ -1,0 +1,44 @@
+services:
+  vitaldeck:
+    image: ghcr.io/qaudy/vitaldeck:latest
+    # to build locally from source instead: comment out image above and uncomment:
+    # build: .
+    container_name: vitaldeck
+    restart: unless-stopped
+    # host networking: /proc/net/dev follows the reader's namespace, so this
+    # is the only way to see the Pi's real interfaces (also exposes :8800)
+    network_mode: host
+    environment:
+      HOST_PROC: /host/proc
+      HOST_SYS: /host/sys
+      HOST_ROOT: /host/root
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # live-edit your links without rebuilding the image
+      - ./links.json:/app/links.json:ro
+      - ./categories.json:/app/categories.json:ro
+      # alert thresholds + Discord webhook (cp config.example.json config.json)
+      - ./config.json:/app/config.json:ro
+
+
+  cloudflared:
+    # opt-in: off by default. Enable with `docker compose --profile tunnel up -d`.
+    # See the Security section of the README before exposing the dashboard.
+    profiles: ["tunnel"]
+    container_name: vitaldeck-tunnel
+    # pinned (not :latest) for reproducible builds — bump to a current tag from
+    # https://hub.docker.com/r/cloudflare/cloudflared/tags
+    image: cloudflare/cloudflared:2024.10.0
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - tunnel
+networks:
+  tunnel:
+    driver: bridge
+

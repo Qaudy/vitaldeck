@@ -1,0 +1,11 @@
+README.md
+vitaldeck.service
+.dockerignore
+.gitignore
+.git
+# never let secrets or personal links into the image build context
+.env
+.env.example
+links.json
+# holds the Discord webhook secret; the image bakes config.example.json instead
+config.json

@@ -1,0 +1,14 @@
+[Unit]
+Description=vitaldeck homelab dashboard
+After=network.target docker.service
+
+[Service]
+Type=simple
+# change User and the path below to match where you cloned vitaldeck
+User=youruser
+ExecStart=/usr/bin/python3 /opt/vitaldeck/server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

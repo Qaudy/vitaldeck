@@ -1,0 +1,45 @@
+vitaldeck Personal Use License
+Copyright (c) 2026 vitaldeck contributors
+
+PERSONAL USE ONLY — NO COMMERCIAL USE PERMITTED
+
+Permission is hereby granted, free of charge, to any individual for PERSONAL,
+NON-COMMERCIAL use only, subject to the following conditions:
+
+1. PERSONAL USE ONLY
+   This software may be used, copied, modified, and run solely for personal,
+   non-commercial, private homelab or hobby purposes.
+
+2. NO COMMERCIAL USE
+   You may NOT, under any circumstances:
+   - Sell, license, rent, lease, or otherwise transfer this software or any
+     derivative of it for money or any other form of compensation.
+   - Use this software as part of any product or service that generates revenue,
+     including SaaS platforms, hosted services, paid dashboards, or any offering
+     that charges end users.
+   - Bundle or redistribute this software (or any derivative) as part of a
+     commercial product.
+
+3. NO REDISTRIBUTION FOR PROFIT
+   Sharing this software with others is permitted ONLY if it remains free of
+   charge and is not bundled with any commercial offering. Any distribution must
+   include this license file, unmodified.
+
+4. MODIFICATIONS
+   You may modify the source code for personal use. Modified versions must
+   retain this license and must not be distributed commercially.
+
+5. NO WARRANTY
+   THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL
+   THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING
+   FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+   IN THE SOFTWARE.
+
+Summary (not a substitute for the full text above):
+  ✅ Run it on your homelab or personal server — free.
+  ✅ Fork and modify it for your own personal use — free.
+  ✅ Share it with friends, as long as it stays free.
+  ❌ Sell it, charge for it, or profit from it in any way — NOT permitted.

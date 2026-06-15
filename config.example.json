@@ -1,0 +1,14 @@
+{
+  "name": "",
+  "alerts": {
+    "temp": { "warn": 70, "crit": 85 },
+    "cpu":  { "warn": 85, "crit": 95 },
+    "mem":  { "warn": 80, "crit": 92 },
+    "disk": { "warn": 80, "crit": 92 },
+    "containers": { "enabled": true },
+    "webhook": {
+      "discord_url": "",
+      "min_severity": "crit"
+    }
+  }
+}

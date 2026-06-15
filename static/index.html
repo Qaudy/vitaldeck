@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vitaldeck</title>
+<style>
+  :root {
+    --bg: #07080f;
+    --card: rgba(255,255,255,.045);
+    --card-edge: rgba(255,255,255,.09);
+    --text: #e8ecf4;
+    --dim: #8d96ad;
+    --cyan: #38e1ff;
+    --violet: #a06bff;
+    --pink: #ff5fa8;
+    --green: #3ddc84;
+    --amber: #ffb454;
+    --red: #ff5468;
+    --mono: ui-monospace, "Cascadia Code", Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow-x: hidden;
+  }
+
+  /* ---- aurora background ----
+     three giant blurred colour blobs drifting on slow infinite keyframes;
+     blur(70px) is what melts them into the aurora wash */
+  .aurora { position: fixed; inset: 0; z-index: -1; overflow: hidden; filter: blur(70px) saturate(1.3); }
+  .aurora i { position: absolute; border-radius: 50%; opacity: .26; }
+  .aurora i:nth-child(1) { width: 55vmax; height: 55vmax; background: #1450ff; top: -20vmax; left: -12vmax; animation: drift1 26s ease-in-out infinite alternate; }
+  .aurora i:nth-child(2) { width: 45vmax; height: 45vmax; background: #8a2bff; bottom: -18vmax; right: -10vmax; animation: drift2 31s ease-in-out infinite alternate; }
+  .aurora i:nth-child(3) { width: 30vmax; height: 30vmax; background: #00d4c0; top: 40%; left: 55%; animation: drift3 22s ease-in-out infinite alternate; opacity: .16; }
+  @keyframes drift1 { to { transform: translate(9vmax, 7vmax) scale(1.15); } }
+  @keyframes drift2 { to { transform: translate(-8vmax, -6vmax) scale(.9); } }
+  @keyframes drift3 { to { transform: translate(-12vmax, 5vmax); } }
+
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 22px 20px 48px; }
+
+  /* ---- header ---- */
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 14px 22px; padding: 6px 4px 20px; }
+  .logo {
+    font-size: 34px; font-weight: 800; letter-spacing: .14em;
+    background: linear-gradient(90deg, var(--cyan), var(--violet) 55%, var(--pink));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    text-shadow: 0 0 38px rgba(120,90,255,.45);
+  }
+  .logo small { font-size: 13px; letter-spacing: .3em; color: var(--dim); -webkit-text-fill-color: var(--dim); margin-left: 8px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-left: auto; font-family: var(--mono); font-size: 13px; color: var(--dim); align-items: baseline; }
+  .meta b { color: var(--text); font-weight: 600; }
+  #clock { font-size: 17px; color: var(--cyan); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--green); box-shadow: 0 0 8px var(--green); margin-right: 6px; transition: background .3s; }
+  .dot.dead { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+  /* ---- grid + cards ---- */
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(12, 1fr); }
+  .card {
+    grid-column: span 12;
+    background: var(--card);
+    border: 1px solid var(--card-edge);
+    border-radius: 16px;
+    padding: 16px 18px;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 10px 32px rgba(0,0,0,.35);
+  }
+  @media (min-width: 720px) {
+    .c4 { grid-column: span 4; } .c6 { grid-column: span 6; } .c8 { grid-column: span 8; } .c12 { grid-column: span 12; }
+  }
+  .card h2 { font-size: 12px; font-weight: 600; letter-spacing: .18em; text-transform: uppercase; color: var(--dim); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .val { margin-left: auto; font-family: var(--mono); font-size: 15px; letter-spacing: 0; text-transform: none; color: var(--text); }
+
+  canvas.spark { width: 100%; height: 86px; display: block; }
+
+  /* per-core bars */
+  .cores { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+  .core { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .core .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.07); overflow: hidden; margin-top: 3px; }
+  .core .bar i { display: block; height: 100%; width: 0; border-radius: 3px; background: linear-gradient(90deg, var(--cyan), var(--violet)); transition: width .5s ease; }
+
+  /* ring gauges — SVG circles; fill level driven by stroke-dashoffset from JS */
+  .rings { display: flex; justify-content: space-around; flex-wrap: wrap; gap: 10px; }
+  .ring { position: relative; width: 116px; height: 116px; }
+  .ring svg { transform: rotate(-90deg); }
+  .ring .track { stroke: rgba(255,255,255,.08); }
+  .ring .arc { stroke-linecap: round; transition: stroke-dashoffset .6s ease, stroke .6s; }
+  .ring .mid { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .ring .mid b { font-family: var(--mono); font-size: 19px; font-weight: 600; }
+  .ring .mid span { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
+  .ring .sub { position: absolute; left: 0; right: 0; bottom: -20px; text-align: center; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+
+  /* disks */
+  .disk { margin-bottom: 12px; }
+  .disk .row { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 12.5px; margin-bottom: 5px; }
+  .disk .row span:last-child { color: var(--dim); }
+  .disk .bar { height: 8px; border-radius: 4px; background: rgba(255,255,255,.07); overflow: hidden; }
+  .disk .bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--green), var(--cyan)); transition: width .6s ease; }
+  .disk .bar i.warn { background: linear-gradient(90deg, var(--amber), var(--pink)); }
+
+  /* network */
+  .iface { margin-bottom: 14px; }
+  .iface .row { display: flex; gap: 14px; align-items: baseline; font-family: var(--mono); font-size: 12.5px; margin-bottom: 4px; }
+  .iface .row b { color: var(--text); font-weight: 600; }
+  .rx { color: var(--cyan); } .tx { color: var(--pink); }
+
+  /* docker */
+  .ctr-group { margin-bottom: 14px; }
+  .ctr-group:last-child { margin-bottom: 0; }
+  .ctr-group h3 { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--violet); margin-bottom: 8px; }
+  .ctrs { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ctr { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--card-edge); background: rgba(255,255,255,.04); font-family: var(--mono); font-size: 12.5px; }
+  .ctr i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .ctr.up i { background: var(--green); box-shadow: 0 0 7px var(--green); }
+  .ctr.down i { background: var(--red); box-shadow: 0 0 7px var(--red); }
+  .ctr span { color: var(--dim); font-size: 11px; }
+
+  /* links */
+  .links { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .links a {
+    display: flex; flex-direction: column; gap: 2px; padding: 13px 14px;
+    border-radius: 12px; border: 1px solid var(--card-edge);
+    background: rgba(255,255,255,.04); text-decoration: none; color: var(--text);
+    transition: transform .15s ease, border-color .15s, background .15s;
+  }
+  .links a:hover { transform: translateY(-2px); border-color: var(--cyan); background: rgba(56,225,255,.08); }
+  .links a b { font-size: 14px; }
+  .links a span { font-size: 11.5px; color: var(--dim); font-family: var(--mono); }
+  .links a em { font-size: 18px; font-style: normal; }
+
+  footer { text-align: center; color: var(--dim); font-family: var(--mono); font-size: 11.5px; margin-top: 26px; opacity: .7; }
+</style>
+</head>
+<body>
+<div class="aurora"><i></i><i></i><i></i></div>
+<div class="wrap">
+
+  <header>
+    <div class="logo"><span id="brand">vitaldeck</span><small id="tagline">HOMELAB</small></div>
+    <div class="meta">
+      <span><i class="dot" id="live"></i><b id="host">…</b></span>
+      <span>up <b id="uptime">…</b></span>
+      <span>load <b id="load">…</b></span>
+      <span id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <div class="card c8">
+      <h2>CPU <span class="val"><span id="cpuPct">–</span>% · <span id="cpuFreq">–</span> MHz</span></h2>
+      <canvas class="spark" id="cpuSpark"></canvas>
+      <div class="cores" id="cores"></div>
+    </div>
+
+    <div class="card c4">
+      <h2>Vitals</h2>
+      <div class="rings" style="padding-bottom:22px">
+        <div class="ring" id="ringTemp"></div>
+        <div class="ring" id="ringMem"></div>
+      </div>
+    </div>
+
+    <div class="card c6">
+      <h2>Network</h2>
+      <div id="ifaces"></div>
+    </div>
+
+    <div class="card c6">
+      <h2>Storage</h2>
+      <div id="disksEl"></div>
+      <h2 style="margin-top:16px">Swap <span class="val" id="swap">–</span></h2>
+    </div>
+
+    <div class="card c12">
+      <h2>Containers <span class="val" id="ctrCount"></span></h2>
+      <div id="ctrs"><span style="color:var(--dim)">docker unavailable</span></div>
+    </div>
+
+    <div class="card c12">
+      <h2>Services</h2>
+      <div class="links" id="links"></div>
+    </div>
+
+  </div>
+
+  <footer id="footer">vitaldeck · zero-dependency stdlib python · sse live feed</footer>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+// --- escaping: every value sourced from config.json / links.json / docker /
+// /proc is untrusted and must be neutralised before it touches innerHTML.
+// Body context -> esc(); href attribute -> esc(safeUrl()) (scheme check too). ---
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// allow only http(s)/ssh and relative (/ or #) targets; block javascript:, data:, etc.
+const safeUrl = u => /^(https?:|ssh:|\/|#)/i.test(String(u ?? "").trim())
+  ? String(u).trim() : "#";
+
+// Sparkline history lives client-side: the server only ever sends the latest
+// snapshot, and each open tab accumulates its own rolling window.
+// 90 samples x 2s tick = a 3-minute window.
+const HIST = 90;
+const cpuHist = [];                    // number per sample (cpu avg %)
+const netHist = {};                    // iface -> [[rx,tx], ...] per sample
+
+function fmtBytes(b) {
+  const u = ["B","KB","MB","GB","TB"]; let i = 0;
+  while (b >= 1024 && i < u.length-1) { b /= 1024; i++; }
+  return b.toFixed(b >= 100 || i === 0 ? 0 : 1) + " " + u[i];
+}
+const fmtRate = b => fmtBytes(b) + "/s";
+function fmtUp(s) {
+  const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+}
+
+/* ---------- canvas sparkline ----------
+   `series` is either numbers (one line) or [a,b] pairs (two lines, e.g.
+   rx/tx). All lines share one y-scale: the series max, re-computed every
+   frame, so the chart auto-ranges as traffic spikes and settles.
+   `fill` adds a gradient wash under the line (used for the big CPU chart). */
+function drawSpark(canvas, series, color, fill) {
+  // render at devicePixelRatio so lines stay crisp on hidpi screens
+  const dpr = devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w*dpr) { canvas.width = w*dpr; canvas.height = h*dpr; }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  if (series.length < 2) return;
+  const max = Math.max(...series.map(s => Array.isArray(s) ? Math.max(...s) : s), 1e-6);
+  const lines = Array.isArray(series[0]) ? series[0].length : 1;
+  for (let L = 0; L < lines; L++) {
+    const vals = series.map(s => Array.isArray(s) ? s[L] : s);
+    ctx.beginPath();
+    vals.forEach((v,i) => {
+      const x = i/(HIST-1)*w, y = h-3 - (v/max)*(h-8);
+      i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+    });
+    const c = Array.isArray(color) ? color[L] : color;
+    if (fill) {
+      const lastX = (vals.length-1)/(HIST-1)*w;
+      const g = ctx.createLinearGradient(0,0,0,h);
+      g.addColorStop(0, c+"55"); g.addColorStop(1, c+"00");
+      ctx.save(); ctx.lineTo(lastX,h); ctx.lineTo(0,h); ctx.closePath();
+      ctx.fillStyle = g; ctx.fill(); ctx.restore();
+      ctx.beginPath();
+      vals.forEach((v,i) => {
+        const x = i/(HIST-1)*w, y = h-3 - (v/max)*(h-8);
+        i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+      });
+    }
+    ctx.strokeStyle = c; ctx.lineWidth = 1.8; ctx.lineJoin = "round"; ctx.stroke();
+  }
+}
+
+/* ---------- ring gauge ----------
+   Classic SVG donut trick: the arc is a full circle whose dash pattern is
+   exactly one circumference long; sliding stroke-dashoffset reveals 0-100%
+   of it. CSS-transitions the offset, so updates sweep smoothly.
+   Returns an updater fn: (pct, bigText, subText, color). */
+function ring(el, label) {
+  const R = 48, C = 2*Math.PI*R;  // radius, circumference
+  el.innerHTML =
+    `<svg width="116" height="116" viewBox="0 0 116 116">
+       <circle class="track" cx="58" cy="58" r="${R}" fill="none" stroke-width="9"/>
+       <circle class="arc" cx="58" cy="58" r="${R}" fill="none" stroke-width="9"
+               stroke-dasharray="${C}" stroke-dashoffset="${C}"/>
+     </svg>
+     <div class="mid"><b>–</b><span>${label}</span></div>
+     <div class="sub"></div>`;
+  const arc = el.querySelector(".arc"), b = el.querySelector("b"), sub = el.querySelector(".sub");
+  return (pct, text, subText, color) => {
+    arc.style.strokeDashoffset = C * (1 - Math.min(pct,100)/100);
+    arc.style.stroke = color;
+    b.textContent = text;
+    sub.textContent = subText || "";
+  };
+}
+const setTemp = ring($("ringTemp"), "temp");
+const setMem  = ring($("ringMem"), "memory");
+// shared green -> amber -> red colour ramp for "fullness" percentages
+const heat = p => p < 55 ? "var(--green)" : p < 75 ? "var(--amber)" : "var(--red)";
+
+/* ---------- render: one call per SSE message ----------
+   Static DOM (core bars, iface rows) is created lazily on the first sample
+   and mutated in place afterwards — only disks/containers re-render HTML. */
+let coreEls = null, ifaceEls = {};
+
+function render(s) {
+  $("host").textContent = s.host;
+  $("uptime").textContent = fmtUp(s.uptime);
+  $("load").textContent = s.load.map(l => l.toFixed(2)).join(" ");
+
+  // cpu
+  $("cpuPct").textContent = s.cpu.avg.toFixed(0);
+  $("cpuFreq").textContent = s.cpu.freq_mhz || "–";
+  cpuHist.push(s.cpu.avg); if (cpuHist.length > HIST) cpuHist.shift();
+  drawSpark($("cpuSpark"), cpuHist, "#38e1ff", true);
+
+  if (!coreEls) {
+    $("cores").innerHTML = s.cpu.cores.map((_,i) =>
+      `<div class="core">c${i} <span></span><div class="bar"><i></i></div></div>`).join("");
+    coreEls = [...$("cores").children];
+  }
+  s.cpu.cores.forEach((p,i) => {
+    coreEls[i].querySelector("span").textContent = p.toFixed(0)+"%";
+    coreEls[i].querySelector("i").style.width = p+"%";
+  });
+
+  // rings — temp gauge is scaled against 85°C, the Pi's throttle point
+  if (s.temp_c != null) {
+    const t = s.temp_c;
+    setTemp(t/85*100, t.toFixed(1)+"°", "throttles @ 85°", t < 60 ? "var(--cyan)" : t < 75 ? "var(--amber)" : "var(--red)");
+  }
+  const mp = s.mem.used/s.mem.total*100;
+  setMem(mp, mp.toFixed(0)+"%", fmtBytes(s.mem.used)+" / "+fmtBytes(s.mem.total), heat(mp));
+
+  // swap
+  $("swap").textContent = s.mem.swap_total
+    ? fmtBytes(s.mem.swap_used)+" / "+fmtBytes(s.mem.swap_total) : "none";
+
+  // network
+  for (const [name, v] of Object.entries(s.net)) {
+    if (!netHist[name]) {
+      netHist[name] = [];
+      const div = document.createElement("div");
+      div.className = "iface";
+      div.innerHTML = `<div class="row"><b>${esc(name)}</b>
+          <span class="rx">▼ <span>–</span></span>
+          <span class="tx">▲ <span>–</span></span></div>
+        <canvas class="spark" style="height:46px"></canvas>`;
+      $("ifaces").appendChild(div);
+      ifaceEls[name] = div;
+    }
+    const h = netHist[name];
+    h.push([v.rx, v.tx]); if (h.length > HIST) h.shift();
+    const [rxEl, txEl] = ifaceEls[name].querySelectorAll(".row span span");
+    rxEl.textContent = fmtRate(v.rx); txEl.textContent = fmtRate(v.tx);
+    drawSpark(ifaceEls[name].querySelector("canvas"), h, ["#38e1ff","#ff5fa8"]);
+  }
+
+  // disks
+  $("disksEl").innerHTML = s.disks.map(d => {
+    const p = d.used/d.total*100;
+    return `<div class="disk">
+      <div class="row"><span>${esc(d.mount)}</span><span>${fmtBytes(d.used)} / ${fmtBytes(d.total)} · ${p.toFixed(0)}%</span></div>
+      <div class="bar"><i class="${p > 80 ? "warn" : ""}" style="width:${p}%"></i></div></div>`;
+  }).join("");
+
+  // docker — group pills under their category; uncategorized go to "Other",
+  // which sorts last. If nothing is categorized, render flat with no heading.
+  if (s.docker) {
+    const up = s.docker.filter(c => c.state === "running").length;
+    $("ctrCount").textContent = `${up}/${s.docker.length} running`;
+    const pill = c =>
+      `<div class="ctr ${c.state === "running" ? "up" : "down"}" title="${esc(c.image)}">
+         <i></i>${esc(c.name)}<span>${esc(c.status)}</span></div>`;
+    const groups = {};
+    for (const c of s.docker) (groups[c.category || "Other"] ??= []).push(c);
+    const names = Object.keys(groups).sort((a, b) =>
+      (a === "Other") - (b === "Other") || a.localeCompare(b));
+    $("ctrs").innerHTML = names.length === 1 && names[0] === "Other"
+      ? `<div class="ctrs">${groups.Other.map(pill).join("")}</div>`
+      : names.map(n => `<div class="ctr-group"><h3>${esc(n)}</h3>
+           <div class="ctrs">${groups[n].map(pill).join("")}</div></div>`).join("");
+  }
+}
+
+/* ---------- branding ----------
+   Personal name lives in config.json (gitignored), not in source — so the
+   repo ships generic and each install brands itself. textContent, never
+   innerHTML, so a config value can't inject markup. */
+fetch("/api/config").then(r => r.json()).then(cfg => {
+  const name = ((cfg && cfg.name) || "").trim();
+  if (!name) return;  // no override -> keep the generic default already in HTML
+  $("brand").textContent = name;
+  document.title = name;
+  $("footer").textContent = name + " · zero-dependency stdlib python · sse live feed";
+}).catch(() => {});  // old image without /api/config -> stay on the generic default
+
+/* ---------- links ---------- */
+fetch("/api/links").then(r => r.json()).then(links => {
+  $("links").innerHTML = links.map(l =>
+    `<a href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener">
+       <em>${esc(l.icon || "🔗")}</em><b>${esc(l.name)}</b><span>${esc(l.desc || "")}</span></a>`).join("")
+    || `<span style="color:var(--dim)">edit links.json to add services</span>`;
+});
+
+/* ---------- clock + SSE ---------- */
+setInterval(() => {
+  $("clock").textContent = new Date().toLocaleTimeString([], {hour12:false});
+}, 1000);
+
+// Live feed. On any error: flip the header dot to red, drop the connection,
+// and retry every 3s — so the dash self-heals when the server restarts.
+function connect() {
+  const es = new EventSource("/events");
+  es.onmessage = e => { $("live").classList.remove("dead"); render(JSON.parse(e.data)); };
+  es.onerror = () => { $("live").classList.add("dead"); es.close(); setTimeout(connect, 3000); };
+}
+connect();
+</script>
+</body>
+</html>

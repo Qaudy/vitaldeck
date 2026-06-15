@@ -1,0 +1,23 @@
+# secrets — the tunnel token lives here; never commit it
+.env
+
+# personal quick-links (the repo ships links.example.json instead)
+links.json
+
+# container category mapping — contains personal host paths
+categories.json
+
+# instance config — holds the Discord webhook URL (a secret) + thresholds
+config.json
+
+__pycache__/
+*.pyc
+
+# local Claude Code settings — personal/machine-specific
+.claude/
+
+# internal working notes — contain personal IPs / planning, not for the public repo
+AUDIT.md
+PROJECT.md
+vitaldeck_phase2plan.md
+description.md
