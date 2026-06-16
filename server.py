@@ -50,11 +50,33 @@ _sse_count = 0      # streams currently open; guarded by _sse_lock
 # Interfaces worth showing: skip loopback, docker bridges and veth pairs.
 IFACE_SKIP = re.compile(r"^(lo|docker\d+|br-[0-9a-f]+|veth.*)$")
 
+# Rate-limit for login/setup: 5 failures → 5-minute lockout.
+# Keyed by client IP (client_address[0]). If vitaldeck is behind a reverse
+# proxy this will always be 127.0.0.1 — X-Forwarded-For is not trusted here
+# because it is attacker-controlled without a verified proxy in front.
+_login_attempts = {}           # {ip: (fail_count, lockout_until_epoch)}
+_login_attempts_lock = threading.Lock()
+RATE_MAX  = 5                  # failures before lockout
+RATE_LOCK = 5 * 60             # lockout duration in seconds
+
 # Built-in alert thresholds. config.json (bind-mounted, hot-editable) overlays
 # these; missing keys fall back here. temp is °C absolute; cpu/mem/disk are %.
 DEFAULTS = {
     # label shown in alert messages ("… on <name>"); empty -> use the hostname
     "name": "",
+    # <small> tagline beside the logo; empty -> "HOMELAB"
+    "tagline": "HOMELAB",
+    # temperature display unit shown in the ring gauge label ("C" or "F")
+    "temp_unit": "C",
+    # ring gauge 100% point in °C — Pi throttles at 85, tune for your hardware
+    "temp_throttle_c": 85,
+    # disk bar turns amber above this % (separate from alerts.disk.warn, which
+    # triggers Discord; these are independent thresholds)
+    "disk_warn_pct": 80,
+    # --- tier 3: consumed by the server at startup; restart to apply ---
+    "tick_seconds": 2.0,        # sampler + SSE push interval
+    "disk_min_gb":  1,          # hide volumes smaller than this (in GB)
+    "iface_skip":   r"^(lo|docker\d+|br-[0-9a-f]+|veth.*)$",
     "alerts": {
         "temp": {"warn": 70, "crit": 85},
         "cpu":  {"warn": 85, "crit": 95},
@@ -276,6 +298,27 @@ def seed_data():
             shutil.copyfile(src, dest)
 
 
+def load_alert_state():
+    """Load persisted alert + container state, or return empty dicts on failure."""
+    try:
+        with open(data_path("alert_state.json")) as f:
+            d = json.load(f)
+        if not isinstance(d, dict):
+            return {}, {}
+        return d.get("alert_state") or {}, d.get("ctr_state") or {}
+    except (OSError, ValueError):
+        return {}, {}
+
+
+def save_alert_state(alert_state, ctr_state):
+    """Persist alert + container state so restarts don't re-fire existing alerts."""
+    try:
+        write_json("alert_state.json", {"alert_state": alert_state,
+                                         "ctr_state":   ctr_state})
+    except OSError as e:
+        print(f"alert state persist error: {e}", file=sys.stderr)
+
+
 def load_config():
     """Merged config: config.json overlaid on DEFAULTS, read fresh each call.
 
@@ -305,29 +348,33 @@ def load_config():
 
 
 def public_config(cfg):
-    """Strip the merged config down to what's safe to hand a browser.
+    """Return the full merged config for an authenticated browser session.
 
-    /api/config is reachable by anyone who can load the dashboard — and via
-    the cloudflared tunnel that can be the public internet. The full config
-    holds the Discord webhook URL, which is a write-capability secret, so the
-    raw config must never leave the server. Return a NEW dict containing only
-    the fields the frontend actually consumes; never mutate `cfg`.
-
-    Exposes the display name, alert thresholds, and theme. Within alerts the
-    whole webhook block is dropped EXCEPT min_severity (which the settings UI
-    needs to show/edit) — the Discord URL, the actual secret, is never emitted.
-    The return is a top-level allow-list ("name"/"alerts"/"theme"), so a new
-    top-level secret in config can't leak by default.
+    Now that /api/config is behind the login gate, every field — including the
+    Discord webhook URL — can be surfaced so the settings UI can show and edit
+    it. The endpoint is still auth-gated in do_GET/do_POST, so unauthenticated
+    requests never reach this function.
     """
-    alerts = cfg.get("alerts", {}) if isinstance(cfg, dict) else {}
-    safe_alerts = {k: v for k, v in alerts.items() if k != "webhook"}
-    wh = alerts.get("webhook", {})
-    if isinstance(wh, dict) and "min_severity" in wh:
-        # min_severity is not a secret; surface only it, never discord_url
-        safe_alerts["webhook"] = {"min_severity": wh.get("min_severity")}
-    return {"name": cfg.get("name", "") if isinstance(cfg, dict) else "",
-            "alerts": safe_alerts,
-            "theme": cfg.get("theme", {}) if isinstance(cfg, dict) else {}}
+    c = cfg if isinstance(cfg, dict) else {}
+    alerts = c.get("alerts", {}) if isinstance(c, dict) else {}
+    wh = alerts.get("webhook", {}) if isinstance(alerts, dict) else {}
+    full_alerts = {k: v for k, v in alerts.items() if k != "webhook"}
+    full_alerts["webhook"] = {
+        "discord_url":  wh.get("discord_url", ""),
+        "min_severity": wh.get("min_severity", "crit"),
+    }
+    return {
+        "name":           c.get("name", ""),
+        "tagline":        c.get("tagline", DEFAULTS["tagline"]),
+        "temp_unit":      c.get("temp_unit", DEFAULTS["temp_unit"]),
+        "temp_throttle_c": c.get("temp_throttle_c", DEFAULTS["temp_throttle_c"]),
+        "disk_warn_pct":  c.get("disk_warn_pct", DEFAULTS["disk_warn_pct"]),
+        "tick_seconds":   c.get("tick_seconds", DEFAULTS["tick_seconds"]),
+        "disk_min_gb":    c.get("disk_min_gb", DEFAULTS["disk_min_gb"]),
+        "iface_skip":     c.get("iface_skip", DEFAULTS["iface_skip"]),
+        "alerts":         full_alerts,
+        "theme":          c.get("theme", {}),
+    }
 
 
 # ------------------------------------------------------------------- auth
@@ -388,6 +435,24 @@ def create_admin(user, password):
     }
     save_auth(record)
     return record
+
+
+def change_password(record, new_password):
+    """Re-hash the password and rotate the session secret.
+
+    Rotating the secret immediately invalidates every existing session token
+    (they are signed with the old key) — stateless revocation at no extra cost.
+    Open SSE streams are auth-checked only at connect time so they keep pushing
+    until the next non-SSE authenticated request fails.
+    """
+    salt = secrets.token_bytes(16)
+    updated = dict(record)
+    updated["salt"]       = salt.hex()
+    updated["hash"]       = _pbkdf2(new_password, salt, PBKDF2_ITER).hex()
+    updated["iterations"] = PBKDF2_ITER
+    updated["secret"]     = secrets.token_hex(32)
+    save_auth(updated)
+    return updated
 
 
 def verify_password(password, record):
@@ -538,9 +603,6 @@ def _num_or_none(v):
 def sanitize_config(incoming):
     """Merge a validated settings payload onto the on-disk config and return
     (config_to_persist, None), or (None, error).
-
-    Preserves alerts.webhook from disk no matter what the client sends — the
-    Discord secret is intentionally not editable from the browser.
     """
     if not isinstance(incoming, dict):
         return None, "config must be an object"
@@ -549,6 +611,47 @@ def sanitize_config(incoming):
 
     if "name" in incoming:
         cfg["name"] = str(incoming.get("name") or "").strip()[:64]
+
+    if "tagline" in incoming:
+        cfg["tagline"] = str(incoming.get("tagline") or "").strip()[:32]
+
+    if "temp_unit" in incoming:
+        val = str(incoming.get("temp_unit", "C")).upper()
+        if val not in ("C", "F"):
+            return None, "temp_unit must be 'C' or 'F'"
+        cfg["temp_unit"] = val
+
+    if "temp_throttle_c" in incoming:
+        v = incoming.get("temp_throttle_c")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not (0 < v <= 200):
+            return None, "temp_throttle_c must be a number between 0 and 200"
+        cfg["temp_throttle_c"] = float(v)
+
+    if "disk_warn_pct" in incoming:
+        v = incoming.get("disk_warn_pct")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not (0 <= v <= 100):
+            return None, "disk_warn_pct must be a number between 0 and 100"
+        cfg["disk_warn_pct"] = float(v)
+
+    if "tick_seconds" in incoming:
+        v = incoming.get("tick_seconds")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not (0.5 <= v <= 60):
+            return None, "tick_seconds must be a number between 0.5 and 60"
+        cfg["tick_seconds"] = float(v)
+
+    if "disk_min_gb" in incoming:
+        v = incoming.get("disk_min_gb")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+            return None, "disk_min_gb must be a non-negative number"
+        cfg["disk_min_gb"] = float(v)
+
+    if "iface_skip" in incoming:
+        s = str(incoming.get("iface_skip", ""))
+        try:
+            re.compile(s)
+        except re.error:
+            return None, "iface_skip must be a valid regular expression"
+        cfg["iface_skip"] = s
 
     a = incoming.get("alerts")
     if isinstance(a, dict):
@@ -566,7 +669,18 @@ def sanitize_config(incoming):
             alerts[metric] = cur
         if isinstance(a.get("containers"), dict) and "enabled" in a["containers"]:
             alerts.setdefault("containers", {})["enabled"] = bool(a["containers"]["enabled"])
-        if "min_severity" in a:
+        wh_in = a.get("webhook")
+        if isinstance(wh_in, dict):
+            wh = alerts.setdefault("webhook", {})
+            if "discord_url" in wh_in:
+                url = str(wh_in["discord_url"] or "").strip()[:512]
+                wh["discord_url"] = url
+            if "min_severity" in wh_in:
+                if wh_in["min_severity"] not in ("warn", "crit"):
+                    return None, "min_severity must be 'warn' or 'crit'"
+                wh["min_severity"] = wh_in["min_severity"]
+        # legacy flat field (older payloads sent min_severity at the alerts level)
+        elif "min_severity" in a:
             if a["min_severity"] not in ("warn", "crit"):
                 return None, "min_severity must be 'warn' or 'crit'"
             alerts.setdefault("webhook", {})["min_severity"] = a["min_severity"]
@@ -715,6 +829,22 @@ class Sampler:
     """
 
     def __init__(self):
+        # --- tier 3: apply config-driven constants before the first sample ---
+        startup_cfg = load_config()
+        global TICK, IFACE_SKIP
+        tick = startup_cfg.get("tick_seconds", DEFAULTS["tick_seconds"])
+        if not isinstance(tick, bool) and isinstance(tick, (int, float)) and 0.5 <= tick <= 60:
+            TICK = float(tick)
+        iface_pat = startup_cfg.get("iface_skip", DEFAULTS["iface_skip"])
+        try:
+            IFACE_SKIP = re.compile(str(iface_pat))
+        except re.error:
+            pass  # keep the compiled default if stored value is invalid
+        raw_min_gb = startup_cfg.get("disk_min_gb", DEFAULTS["disk_min_gb"])
+        self._disk_min_gb = float(raw_min_gb) if (
+            not isinstance(raw_min_gb, bool) and
+            isinstance(raw_min_gb, (int, float)) and raw_min_gb >= 0) else 1
+
         self.snapshot = {}
         self.lock = threading.Lock()
         self._prev_cpu = cpu_times()
@@ -722,13 +852,18 @@ class Sampler:
         self._prev_t = time.monotonic()
         self._docker = docker_ps()
         self._tick_n = 0
-        # per-metric edge state for threshold alerts ("armed"|"alerting"),
-        # carried across ticks so a breach fires once, not every 2 seconds
-        self._alert_state = {}
-        # baseline of container running-state, seeded from the first poll so a
-        # fresh start doesn't alert for everything that's already up
-        self._ctr_state = {c["name"]: (c["state"] == "running")
-                           for c in (self._docker or [])}
+
+        # restore persisted alert state so a restart doesn't re-fire alerts
+        # that were already in flight; fall back to in-memory defaults if absent
+        saved_alert, saved_ctr = load_alert_state()
+        self._alert_state = saved_alert if saved_alert else {}
+        if saved_ctr:
+            self._ctr_state = saved_ctr
+        else:
+            # seed baseline from current docker state so a fresh boot doesn't
+            # alert for containers that were already up
+            self._ctr_state = {c["name"]: (c["state"] == "running")
+                               for c in (self._docker or [])}
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _loop(self):
@@ -776,6 +911,13 @@ class Sampler:
         freq_raw = read_file(
             f"{SYS}/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "0")  # kHz
 
+        raw_disks = disks()
+        # disk_min_gb post-filter: disks() already drops volumes < 1 GB;
+        # this lets users raise the floor further without touching disks()
+        if self._disk_min_gb > 1:
+            min_bytes = self._disk_min_gb * (1 << 30)
+            raw_disks = [d for d in raw_disks if d["total"] >= min_bytes]
+
         snap = {
             "t": time.time(),
             # the container's own hostname is a random ID, so prefer the
@@ -791,7 +933,7 @@ class Sampler:
             "mem": {"total": mem_total, "used": mem_used,
                     "swap_total": mi.get("SwapTotal", 0),
                     "swap_used": mi.get("SwapTotal", 0) - mi.get("SwapFree", 0)},
-            "disks": disks(),
+            "disks": raw_disks,
             "net": net,
             "docker": self._docker,
         }
@@ -815,6 +957,10 @@ class Sampler:
         # config "name" overrides the hostname as the label in every message
         label = (cfg.get("name") or snap.get("host", "")) if isinstance(cfg, dict) \
             else snap.get("host", "")
+
+        # snapshot state before the loop so we can detect changes and persist
+        prev_alert = dict(self._alert_state)
+        prev_ctr   = dict(self._ctr_state)
 
         mem = snap["mem"]
         disk_pct = max((d["used"] / d["total"] * 100
@@ -847,15 +993,48 @@ class Sampler:
             for ev in ctr_evs:
                 post_discord(url, format_container(ev, label))
 
+        # persist state when anything changed (only on transitions, not every tick)
+        if self._alert_state != prev_alert or self._ctr_state != prev_ctr:
+            save_alert_state(self._alert_state, self._ctr_state)
+
     def get(self):
         with self.lock:
             return dict(self.snapshot)
 
 
+# Seed before constructing the Sampler so load_config() in __init__ sees
+# config.json on a fresh install (seed_data is called again in main() but
+# that runs after the Sampler is already alive).
+seed_data()
 SAMPLER = Sampler()
 
 
 # ------------------------------------------------------------------ server
+
+def _rate_check(ip):
+    """Return (allowed, retry_after_seconds). Lazy-evicts expired entries."""
+    with _login_attempts_lock:
+        count, until = _login_attempts.get(ip, (0, 0))
+        if until and time.time() < until:
+            return False, int(until - time.time())
+        if until:  # lockout expired — clean up the entry
+            del _login_attempts[ip]
+        return True, 0
+
+
+def _rate_fail(ip):
+    """Record a failed attempt; apply lockout if threshold crossed."""
+    with _login_attempts_lock:
+        count, until = _login_attempts.get(ip, (0, 0))
+        count += 1
+        new_until = time.time() + RATE_LOCK if count >= RATE_MAX else 0
+        _login_attempts[ip] = (count, new_until)
+
+
+def _rate_clear(ip):
+    """Clear the attempt counter after a successful auth."""
+    with _login_attempts_lock:
+        _login_attempts.pop(ip, None)
 
 class Handler(BaseHTTPRequestHandler):
     """Routes — public: / (UI shell) · /api/health · /api/auth/status ·
@@ -966,6 +1145,8 @@ class Handler(BaseHTTPRequestHandler):
         # --- writes require a valid session ---
         if not self._authed():
             return self._json(401, {"error": "auth required"})
+        if path == "/api/auth/change-password":
+            return self._do_change_password()
         body = self._body()
         if body is None:
             return self._json(400, {"error": "invalid JSON body"})
@@ -992,25 +1173,52 @@ class Handler(BaseHTTPRequestHandler):
         """First-run only: create the single admin account and log them in."""
         if is_configured():
             return self._json(409, {"error": "already configured"})
+        ip = self.client_address[0]
+        allowed, retry = _rate_check(ip)
+        if not allowed:
+            return self._json(429, {"error": f"Too many attempts. Try again in {retry}s."})
         body = self._body() or {}
         user = str(body.get("user", "")).strip()
         pw = str(body.get("password", ""))
         if not user or len(pw) < 8:
+            _rate_fail(ip)
             return self._json(400, {"error": "username required; password "
                                              "must be at least 8 characters"})
         record = create_admin(user, pw)
+        _rate_clear(ip)
         self._json(200, {"ok": True}, [self._cookie(make_session(record),
                                                     SESSION_TTL)])
 
     def _do_login(self):
+        ip = self.client_address[0]
+        allowed, retry = _rate_check(ip)
+        if not allowed:
+            return self._json(429, {"error": f"Too many attempts. Try again in {retry}s."})
         body = self._body() or {}
         record = load_auth()
         user = str(body.get("user", "")).strip()
         pw = str(body.get("password", ""))
         if record and user == record.get("user") and verify_password(pw, record):
+            _rate_clear(ip)
             return self._json(200, {"ok": True},
                               [self._cookie(make_session(record), SESSION_TTL)])
+        _rate_fail(ip)
         self._json(401, {"error": "invalid username or password"})
+
+    def _do_change_password(self):
+        """Change the admin password; rotates the session secret to invalidate
+        all existing cookies. Issues a fresh cookie for the calling session."""
+        body = self._body() or {}
+        current_pw = str(body.get("current_password", ""))
+        new_pw     = str(body.get("new_password", ""))
+        record = load_auth()
+        if not record or not verify_password(current_pw, record):
+            return self._json(401, {"error": "current password incorrect"})
+        if len(new_pw) < 8:
+            return self._json(400, {"error": "new password must be at least 8 characters"})
+        new_record = change_password(record, new_pw)
+        self._json(200, {"ok": True},
+                   [self._cookie(make_session(new_record), SESSION_TTL)])
 
     def _sse(self):
         """Server-Sent Events: push the snapshot every TICK seconds, forever.

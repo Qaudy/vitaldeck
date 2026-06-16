@@ -195,7 +195,7 @@
   <header>
     <div class="logo"><span id="brand">vitaldeck</span><small id="tagline">HOMELAB</small></div>
     <div class="meta">
-      <span><i class="dot" id="live"></i><b id="host">…</b></span>
+      <span><i class="dot" id="live"></i><b id="host">…</b><span id="staleLabel" style="display:none;font-size:11px;color:var(--red);margin-left:6px"></span></span>
       <span>up <b id="uptime">…</b></span>
       <span>load <b id="load">…</b></span>
       <span id="clock">--:--:--</span>
@@ -286,6 +286,28 @@
 
     <div class="tabpane" data-pane="general">
       <label class="field"><span>Dashboard name</span><input type="text" id="setName" placeholder="(uses hostname when blank)"></label>
+      <label class="field"><span>Tagline</span><input type="text" id="setTagline" placeholder="HOMELAB" maxlength="32"></label>
+      <label class="field"><span>Temperature unit</span>
+        <select id="setTempUnit"><option value="C">°C (Celsius)</option><option value="F">°F (Fahrenheit)</option></select></label>
+      <label class="field"><span>Throttle temp °C — ring gauge 100% point</span>
+        <input type="number" id="setThrottle" min="1" max="200" step="1" value="85"></label>
+      <label class="field"><span>Disk warn % — bar turns amber above this</span>
+        <input type="number" id="setDiskWarn" min="0" max="100" step="1" value="80"></label>
+      <hr style="border:none;border-top:1px solid var(--card-edge);margin:18px 0">
+      <p style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:12px">Server settings <span style="font-size:10px;text-transform:none;letter-spacing:0">(restart to apply)</span></p>
+      <label class="field"><span>Sample interval (seconds)</span>
+        <input type="number" id="setTick" min="0.5" max="60" step="0.5" value="2"></label>
+      <label class="field"><span>Hide disks smaller than (GB)</span>
+        <input type="number" id="setDiskMin" min="0" max="1000" step="1" value="1"></label>
+      <label class="field"><span>Interface skip regex</span>
+        <input type="text" id="setIfaceSkip" placeholder="^(lo|docker\d+|…)$"></label>
+      <hr style="border:none;border-top:1px solid var(--card-edge);margin:18px 0">
+      <p style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:12px">Change password</p>
+      <label class="field"><span>Current password</span><input type="password" id="cpCurrent" autocomplete="current-password"></label>
+      <label class="field"><span>New password (min 8 characters)</span><input type="password" id="cpNew" autocomplete="new-password"></label>
+      <label class="field"><span>Confirm new password</span><input type="password" id="cpNew2" autocomplete="new-password"></label>
+      <div class="formerr" id="cpErr"></div>
+      <button class="btn ghost" id="cpBtn" type="button" style="margin-top:4px">Change password</button>
     </div>
 
     <div class="tabpane" data-pane="alerts" hidden>
@@ -293,7 +315,8 @@
       <label class="toggle" style="margin-top:16px"><input type="checkbox" id="ctrToggle"> Notify on container start / stop</label>
       <label class="field" style="margin-top:16px"><span>Webhook minimum severity</span>
         <select id="minSev"><option value="warn">warn</option><option value="crit">crit</option></select></label>
-      <p class="lead" style="margin-top:8px">The Discord webhook URL is set in <code>config.json</code> inside the data volume — it is intentionally not editable here, since anyone who can open the dashboard could otherwise read it.</p>
+      <label class="field" style="margin-top:8px"><span>Discord webhook URL</span>
+        <input type="text" id="webhookUrl" placeholder="https://discord.com/api/webhooks/…" autocomplete="off"></label>
     </div>
 
     <div class="tabpane" data-pane="links" hidden>
@@ -334,6 +357,11 @@ const safeUrl = u => /^(https?:|ssh:|\/|#)/i.test(String(u ?? "").trim())
   ? String(u).trim() : "#";
 // read a live CSS custom property (so sparklines follow the active theme)
 const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+// Display config fetched from /api/config — drives temp unit, throttle point,
+// disk warn colour, and tagline. Defaults here match the server DEFAULTS so
+// the page renders correctly even if the config fetch fails.
+let _cfg = { temp_unit: "C", temp_throttle_c: 85, disk_warn_pct: 80 };
 
 // Sparkline history lives client-side: the server only ever sends the latest
 // snapshot, and each open tab accumulates its own rolling window.
@@ -447,10 +475,17 @@ function render(s) {
     coreEls[i].querySelector("i").style.width = p+"%";
   });
 
-  // rings — temp gauge is scaled against 85°C, the Pi's throttle point
+  // temp ring — scale against configured throttle point, display in chosen unit
   if (s.temp_c != null) {
-    const t = s.temp_c;
-    setTemp(t/85*100, t.toFixed(1)+"°", "throttles @ 85°", t < 60 ? "var(--cyan)" : t < 75 ? "var(--amber)" : "var(--red)");
+    const tc = s.temp_c, throttle = _cfg.temp_throttle_c || 85;
+    const pct = tc / throttle * 100;
+    const color = tc < 60 ? "var(--cyan)" : tc < 75 ? "var(--amber)" : "var(--red)";
+    if (_cfg.temp_unit === "F") {
+      const tf = tc * 9/5 + 32, thrF = (throttle * 9/5 + 32).toFixed(0);
+      setTemp(pct, tf.toFixed(1)+"°F", `throttles @ ${thrF}°F`, color);
+    } else {
+      setTemp(pct, tc.toFixed(1)+"°C", `throttles @ ${throttle}°C`, color);
+    }
   }
   const mp = s.mem.used/s.mem.total*100;
   setMem(mp, mp.toFixed(0)+"%", fmtBytes(s.mem.used)+" / "+fmtBytes(s.mem.total), heat(mp));
@@ -484,7 +519,7 @@ function render(s) {
     const p = d.used/d.total*100;
     return `<div class="disk">
       <div class="row"><span>${esc(d.mount)}</span><span>${fmtBytes(d.used)} / ${fmtBytes(d.total)} · ${p.toFixed(0)}%</span></div>
-      <div class="bar"><i class="${p > 80 ? "warn" : ""}" style="width:${p}%"></i></div></div>`;
+      <div class="bar"><i class="${p > (_cfg.disk_warn_pct ?? 80) ? "warn" : ""}" style="width:${p}%"></i></div></div>`;
   }).join("");
 
   // docker — group pills under their category; uncategorized go to "Other",
@@ -538,11 +573,13 @@ function applyTheme(theme) {
     if (theme[k]) document.documentElement.style.setProperty("--" + k, theme[k]);
 }
 
-function applyBranding(name) {
+function applyBranding(name, tagline) {
   name = (name || "").trim();
   $("brand").textContent = name || "vitaldeck";
   document.title = name || "vitaldeck";
   $("footer").textContent = (name || "vitaldeck") + " · zero-dependency stdlib python · sse live feed";
+  if (tagline !== undefined)
+    $("tagline").textContent = (tagline || "").trim() || "HOMELAB";
 }
 
 function renderLinks(links) {
@@ -558,7 +595,13 @@ async function startDashboard() {
   $("gear").hidden = false;
   $("logoutBtn").hidden = false;
   const cfg = await api("GET", "/api/config");
-  if (cfg.ok && cfg.data) { applyTheme(cfg.data.theme); applyBranding(cfg.data.name); }
+  if (cfg.ok && cfg.data) {
+    applyTheme(cfg.data.theme);
+    applyBranding(cfg.data.name, cfg.data.tagline);
+    _cfg.temp_unit       = cfg.data.temp_unit      || "C";
+    _cfg.temp_throttle_c = cfg.data.temp_throttle_c ?? 85;
+    _cfg.disk_warn_pct   = cfg.data.disk_warn_pct  ?? 80;
+  }
   const links = await api("GET", "/api/links");
   if (links.ok) renderLinks(links.data);
   if (started) return;           // SSE only once, even across re-auths
@@ -611,7 +654,16 @@ function openSettings() {
   Promise.all([api("GET","/api/config"), api("GET","/api/links"), api("GET","/api/categories")])
     .then(([c, l, cat]) => {
       const cfg = c.data || {}, alerts = cfg.alerts || {};
-      $("setName").value = cfg.name || "";
+      $("setName").value    = cfg.name    || "";
+      $("setTagline").value = cfg.tagline || "";
+      $("setTempUnit").value  = cfg.temp_unit      || "C";
+      $("setThrottle").value  = cfg.temp_throttle_c ?? 85;
+      $("setDiskWarn").value  = cfg.disk_warn_pct  ?? 80;
+      $("setTick").value      = cfg.tick_seconds   ?? 2;
+      $("setDiskMin").value   = cfg.disk_min_gb    ?? 1;
+      $("setIfaceSkip").value = cfg.iface_skip     || "";
+      $("cpErr").textContent = ""; $("cpErr").style.color = "var(--red)";
+      $("cpCurrent").value = $("cpNew").value = $("cpNew2").value = "";
       // alert thresholds
       $("alertGrid").innerHTML = ALERT_METRICS.map(([m, unit]) => {
         const t = alerts[m] || {};
@@ -620,7 +672,9 @@ function openSettings() {
                 <label class="field"><span>${m} crit (${unit})</span><input type="number" step="any" id="al_${m}_crit" value="${v(t.crit)}"></label>`;
       }).join("");
       $("ctrToggle").checked = !((alerts.containers || {}).enabled === false);
-      $("minSev").value = ((alerts.webhook || {}).min_severity) || "crit";
+      const wh = alerts.webhook || {};
+      $("minSev").value     = wh.min_severity || "crit";
+      $("webhookUrl").value = wh.discord_url  || "";
       // links + categories
       $("linkRows").innerHTML = ""; (l.data || []).forEach(addLinkRow);
       $("catRows").innerHTML = ""; (cat.data || []).forEach(addCatRow);
@@ -669,13 +723,26 @@ function closeSettings() {
 
 async function saveSettings() {
   const num = v => v.trim() === "" ? null : Number(v);
-  const alerts = { containers: { enabled: $("ctrToggle").checked },
-                   min_severity: $("minSev").value };
+  const alerts = {
+    containers: { enabled: $("ctrToggle").checked },
+    webhook: { discord_url: $("webhookUrl").value.trim(), min_severity: $("minSev").value },
+  };
   for (const [m] of ALERT_METRICS)
     alerts[m] = { warn: num($("al_" + m + "_warn").value), crit: num($("al_" + m + "_crit").value) };
   const theme = {};
   THEME_FIELDS.forEach(k => theme[k] = $("th_" + k).value);
-  const config = { name: $("setName").value, alerts, theme };
+  const config = {
+    name:            $("setName").value,
+    tagline:         $("setTagline").value,
+    temp_unit:       $("setTempUnit").value,
+    temp_throttle_c: Number($("setThrottle").value)  || 85,
+    disk_warn_pct:   Number($("setDiskWarn").value)  ?? 80,
+    tick_seconds:    Number($("setTick").value)      || 2,
+    disk_min_gb:     Number($("setDiskMin").value)   ?? 1,
+    iface_skip:      $("setIfaceSkip").value.trim(),
+    alerts,
+    theme,
+  };
 
   const links = [...$("linkRows").children].map(r => {
     const i = r.querySelectorAll("input");
@@ -695,7 +762,10 @@ async function saveSettings() {
   $("saveBtn").disabled = false;
   if (cr.ok && lr.ok && kr.ok) {
     committedTheme = Object.assign({}, theme);
-    applyTheme(theme); applyBranding(config.name);
+    applyTheme(theme); applyBranding(config.name, config.tagline);
+    _cfg.temp_unit       = config.temp_unit;
+    _cfg.temp_throttle_c = config.temp_throttle_c;
+    _cfg.disk_warn_pct   = config.disk_warn_pct;
     const fresh = await api("GET", "/api/links"); if (fresh.ok) renderLinks(fresh.data);
     $("saveMsg").textContent = "Saved ✓";
   } else {
@@ -703,6 +773,25 @@ async function saveSettings() {
     $("saveMsg").textContent = err || "Save failed.";
   }
 }
+
+$("cpBtn").addEventListener("click", async () => {
+  const cur = $("cpCurrent").value, nw = $("cpNew").value, nw2 = $("cpNew2").value;
+  $("cpErr").style.color = "var(--red)";
+  if (!cur)          return $("cpErr").textContent = "Enter your current password.";
+  if (nw.length < 8) return $("cpErr").textContent = "New password must be at least 8 characters.";
+  if (nw !== nw2)    return $("cpErr").textContent = "Passwords don't match.";
+  $("cpBtn").disabled = true; $("cpErr").textContent = "";
+  const r = await api("POST", "/api/auth/change-password",
+    { current_password: cur, new_password: nw });
+  $("cpBtn").disabled = false;
+  if (r.ok) {
+    $("cpErr").style.color = "var(--green)";
+    $("cpErr").textContent = "Password changed. You remain logged in.";
+    $("cpCurrent").value = $("cpNew").value = $("cpNew2").value = "";
+  } else {
+    $("cpErr").textContent = (r.data && r.data.error) || "Password change failed.";
+  }
+});
 
 $("gear").addEventListener("click", openSettings);
 $("settingsClose").addEventListener("click", closeSettings);
@@ -725,12 +814,49 @@ setInterval(() => {
   $("clock").textContent = new Date().toLocaleTimeString([], {hour12:false});
 }, 1000);
 
-// Live feed. On any error: flip the header dot to red, drop the connection,
-// and retry every 3s — so the dash self-heals when the server restarts.
+// Live feed with exponential backoff (3s → 6s → 12s … → 60s cap) and a
+// stale-data indicator that appears after 5s of silence and dims the grid
+// after 10s — so the dashboard clearly signals when it's not live.
+let _backoff   = 3000;
+const BACKOFF_BASE = 3000, BACKOFF_MAX = 60000;
+let _lastSeen  = Date.now();
+let _staleTimer = null;
+
+function _nextBackoff() {
+  const d = _backoff;
+  _backoff = Math.min(_backoff * 2, BACKOFF_MAX);
+  return d;
+}
+
+function _onSseMessage() {
+  _backoff = BACKOFF_BASE;
+  _lastSeen = Date.now();
+  $("live").classList.remove("dead");
+  $("staleLabel").style.display = "none";
+  document.querySelector(".grid").style.opacity = "";
+}
+
+function _startStaleWatch() {
+  if (_staleTimer) return;
+  _staleTimer = setInterval(() => {
+    const age = Math.floor((Date.now() - _lastSeen) / 1000);
+    if (age >= 5) {
+      $("staleLabel").textContent = `last seen ${age}s ago`;
+      $("staleLabel").style.display = "";
+    }
+    if (age >= 10) document.querySelector(".grid").style.opacity = "0.6";
+  }, 1000);
+}
+
 function connect() {
   const es = new EventSource("/events");
-  es.onmessage = e => { $("live").classList.remove("dead"); render(JSON.parse(e.data)); };
-  es.onerror = () => { $("live").classList.add("dead"); es.close(); setTimeout(connect, 3000); };
+  es.onmessage = e => { _onSseMessage(); render(JSON.parse(e.data)); };
+  es.onerror = () => {
+    $("live").classList.add("dead");
+    es.close();
+    setTimeout(connect, _nextBackoff());
+  };
+  _startStaleWatch();
 }
 
 boot();

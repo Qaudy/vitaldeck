@@ -1,5 +1,12 @@
 {
   "name": "",
+  "tagline": "HOMELAB",
+  "temp_unit": "C",
+  "temp_throttle_c": 85,
+  "disk_warn_pct": 80,
+  "tick_seconds": 2.0,
+  "disk_min_gb": 1,
+  "iface_skip": "^(lo|docker\\d+|br-[0-9a-f]+|veth.*)$",
   "alerts": {
     "temp": { "warn": 70, "crit": 85 },
     "cpu":  { "warn": 85, "crit": 95 },
