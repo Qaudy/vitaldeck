@@ -6,6 +6,28 @@ All notable changes to vitaldeck are documented here.
 
 ## [Unreleased]
 
+### Added — Phase 3
+
+- **5 built-in colour presets** in Settings → Appearance: Aurora Dark (default), Synthwave,
+  Ocean, Terminal, and Ember. Clicking a preset fills all colour pickers and previews live.
+- **Manual container assignments** in Settings → Categories. A new "Manual assignments"
+  section lists every running container with a category dropdown, letting you override the
+  automatic path-rule grouping per container. Overrides take precedence over path rules and
+  are persisted in `categories.json` as an `"overrides"` object alongside `"rules"`.
+- **Telegram alerts** — add a bot token and chat ID in Settings → Alerts to receive the same
+  breach/recovery/container messages on Telegram alongside (or instead of) Discord. Both
+  platforms share the same minimum-severity setting.
+- **Interface skip regex documentation** — a short help note below the regex field in
+  Settings → General lists what the default pattern skips (loopback, docker bridges, veth pairs).
+- **Default example links** updated to Google and the vitaldeck GitHub page.
+
+### Fixed — Phase 3
+
+- **Select element styling** — `appearance: none` + custom SVG chevron so dropdowns match
+  the dark theme on all browsers instead of rendering with OS-default chrome.
+- **Cursor inconsistencies** — text inputs now show the text cursor; checkboxes and their
+  wrapper labels show the pointer cursor.
+
 ### Added
 
 - **Everything is now configurable from the dashboard** — no config files to edit manually.

@@ -1,14 +1,14 @@
 [
   {
-    "name": "Router",
-    "url": "http://192.168.1.1",
-    "desc": "router admin",
-    "icon": "📡"
+    "name": "Google",
+    "url": "https://google.com",
+    "desc": "search",
+    "icon": "🔍"
   },
   {
-    "name": "Jellyfin",
-    "url": "http://192.168.1.2:8096",
-    "desc": "media server",
-    "icon": "🎬"
+    "name": "vitaldeck",
+    "url": "https://github.com/Qaudy/vitaldeck",
+    "desc": "GitHub project",
+    "icon": "📦"
   }
 ]

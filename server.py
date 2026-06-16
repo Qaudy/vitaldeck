@@ -84,7 +84,8 @@ DEFAULTS = {
         "disk": {"warn": 80, "crit": 92},
         # notify when a container starts/stops; toggle off without losing config
         "containers": {"enabled": True},
-        "webhook": {"discord_url": "", "min_severity": "crit"},
+        "webhook": {"discord_url": "", "min_severity": "crit",
+                     "telegram_bot_token": "", "telegram_chat_id": ""},
     },
     # UI colour palette, editable in the dashboard's Appearance settings. Each
     # value is a CSS hex colour the frontend applies to a --css-variable. card /
@@ -203,29 +204,38 @@ def disks():
 
 
 def load_categories():
-    """Category rules from categories.json: [{"name": ..., "path": ...}, ...].
+    """Load category rules and manual overrides from categories.json.
 
-    Each rule maps a display name to a host path; containers whose compose
-    project lives under that path are grouped beneath the name. Read fresh
-    on every docker poll so edits apply without a restart (same idea as
-    links.json).
+    Returns {"rules": [{name, path}, ...], "overrides": {container_name: category}}.
+    Backward-compatible with the old plain-array format (treated as rules-only).
+    Read fresh on every docker poll so edits apply without a restart.
     """
     try:
         with open(data_path("categories.json")) as f:
-            rules = json.load(f)
-        return rules if isinstance(rules, list) else []
+            data = json.load(f)
+        if isinstance(data, list):
+            return {"rules": data, "overrides": {}}
+        if isinstance(data, dict):
+            rules = data.get("rules", [])
+            overrides = data.get("overrides", {})
+            return {
+                "rules":     rules     if isinstance(rules, list)     else [],
+                "overrides": overrides if isinstance(overrides, dict) else {},
+            }
+        return {"rules": [], "overrides": {}}
     except (OSError, ValueError):
-        return []
+        return {"rules": [], "overrides": {}}
 
 
-def categorize(workdir, rules):
+def categorize(workdir, name, rules, overrides):
     """Pick the category name for a container, or None for uncategorized.
 
-    `workdir` is the host directory of the compose file that launched the
-    container (the com.docker.compose.project.working_dir label), e.g.
-    "/home/user/containers/nova_tv/jellyfin". Empty string for containers
-    started outside compose (docker run).
+    Manual overrides take precedence over path-based rules. `workdir` is
+    the com.docker.compose.project.working_dir label value; empty string for
+    containers started outside compose (docker run).
     """
+    if overrides and name in overrides:
+        return overrides[name] or None
     if not workdir:
         return None
     for rule in rules:
@@ -255,13 +265,14 @@ def docker_ps():
             capture_output=True, text=True, timeout=4)
         if r.returncode != 0:
             return None
-        rules = load_categories()
+        cats = load_categories()
+        rules, overrides = cats.get("rules", []), cats.get("overrides", {})
         rows = []
         for line in r.stdout.splitlines():
             name, state, status, image, workdir = (line.split("\t") + [""] * 5)[:5]
             rows.append({"name": name, "state": state,
                          "status": status, "image": image,
-                         "category": categorize(workdir, rules)})
+                         "category": categorize(workdir, name, rules, overrides)})
         return rows
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -360,8 +371,10 @@ def public_config(cfg):
     wh = alerts.get("webhook", {}) if isinstance(alerts, dict) else {}
     full_alerts = {k: v for k, v in alerts.items() if k != "webhook"}
     full_alerts["webhook"] = {
-        "discord_url":  wh.get("discord_url", ""),
-        "min_severity": wh.get("min_severity", "crit"),
+        "discord_url":        wh.get("discord_url", ""),
+        "min_severity":       wh.get("min_severity", "crit"),
+        "telegram_bot_token": wh.get("telegram_bot_token", ""),
+        "telegram_chat_id":   wh.get("telegram_chat_id", ""),
     }
     return {
         "name":           c.get("name", ""),
@@ -577,18 +590,37 @@ def sanitize_links(incoming):
 
 
 def sanitize_categories(incoming):
-    """Validate a categories payload into a clean list, or (None, error)."""
-    if not isinstance(incoming, list):
-        return None, "categories must be a list"
-    out = []
-    for item in incoming:
+    """Validate a categories payload (rules + overrides), or (None, error).
+
+    Accepts both the new dict format {"rules": [...], "overrides": {...}} and
+    the legacy plain-array format (treated as rules-only, no overrides).
+    """
+    if isinstance(incoming, list):
+        incoming = {"rules": incoming, "overrides": {}}
+    if not isinstance(incoming, dict):
+        return None, "categories must be an object or array"
+    rules_in    = incoming.get("rules", [])
+    overrides_in = incoming.get("overrides", {})
+    if not isinstance(rules_in, list):
+        return None, "rules must be an array"
+    if not isinstance(overrides_in, dict):
+        return None, "overrides must be an object"
+    rules = []
+    for item in rules_in:
         if not isinstance(item, dict):
-            return None, "each category must be an object"
+            return None, "each rule must be an object"
         name = str(item.get("name", "")).strip()[:80]
         path = str(item.get("path", "")).strip()[:255]
         if name and path:
-            out.append({"name": name, "path": path})
-    return out, None
+            rules.append({"name": name, "path": path})
+    overrides = {}
+    for cname, cat in overrides_in.items():
+        cname = str(cname).strip()[:80]
+        if cname:
+            cat_str = str(cat or "").strip()[:80]
+            if cat_str:
+                overrides[cname] = cat_str
+    return {"rules": rules, "overrides": overrides}, None
 
 
 def _num_or_none(v):
@@ -679,6 +711,10 @@ def sanitize_config(incoming):
                 if wh_in["min_severity"] not in ("warn", "crit"):
                     return None, "min_severity must be 'warn' or 'crit'"
                 wh["min_severity"] = wh_in["min_severity"]
+            if "telegram_bot_token" in wh_in:
+                wh["telegram_bot_token"] = str(wh_in["telegram_bot_token"] or "").strip()[:200]
+            if "telegram_chat_id" in wh_in:
+                wh["telegram_chat_id"] = str(wh_in["telegram_chat_id"] or "").strip()[:50]
         # legacy flat field (older payloads sent min_severity at the alerts level)
         elif "min_severity" in a:
             if a["min_severity"] not in ("warn", "crit"):
@@ -818,6 +854,48 @@ def post_discord(url, content):
     threading.Thread(target=_send, daemon=True).start()
 
 
+def post_telegram(token, chat_id, html):
+    """Fire-and-forget Telegram Bot API message (HTML parse mode).
+
+    Runs on its own daemon thread — same rationale as post_discord().
+    Get a token from @BotFather; find your chat_id by messaging the bot then
+    calling the getUpdates API endpoint.
+    """
+    def _send():
+        try:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            data = json.dumps({"chat_id": chat_id, "text": html,
+                               "parse_mode": "HTML"}).encode()
+            req = urllib.request.Request(
+                url, data=data, headers={"Content-Type": "application/json",
+                                          "User-Agent": "vitaldeck/1.0"})
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            print(f"telegram error: {e}", file=sys.stderr)
+    threading.Thread(target=_send, daemon=True).start()
+
+
+def format_alert_telegram(ev):
+    """Render one alert event as a Telegram HTML message."""
+    unit = "°C" if ev["metric"] == "temp" else "%"
+    name = ev["metric"].upper()
+    host = ev.get("host") or "host"
+    if ev["kind"] == "recovery":
+        return f"✅ <b>{name} recovered</b> on {host} — now {ev['value']:.0f}{unit}"
+    sev = ev["severity"]
+    icon = "🔴" if sev == "crit" else "🟠"
+    thr = ev.get("crit") if sev == "crit" else ev.get("warn")
+    return (f"{icon} <b>{name} {sev.upper()}</b> on {host} — "
+            f"{ev['value']:.0f}{unit} (≥ {thr}{unit})")
+
+
+def format_container_telegram(ev, label):
+    """Render one container start/stop event as a Telegram HTML message."""
+    if ev["kind"] == "ctr_start":
+        return f"🟢 <b>container started</b> on {label} — <code>{ev['name']}</code>"
+    return f"🔴 <b>container stopped</b> on {label} — <code>{ev['name']}</code>"
+
+
 class Sampler:
     """Background thread that keeps the latest stats snapshot in memory.
 
@@ -952,8 +1030,10 @@ class Sampler:
         decide what (if anything) to send. Disk uses the fullest volume."""
         al = cfg.get("alerts", {}) if isinstance(cfg, dict) else {}
         wh = al.get("webhook", {}) if isinstance(al, dict) else {}
-        url = wh.get("discord_url", "")
-        min_sev = wh.get("min_severity", "crit")
+        url      = wh.get("discord_url", "")
+        tg_token = wh.get("telegram_bot_token", "")
+        tg_chat  = wh.get("telegram_chat_id", "")
+        min_sev  = wh.get("min_severity", "crit")
         # config "name" overrides the hostname as the label in every message
         label = (cfg.get("name") or snap.get("host", "")) if isinstance(cfg, dict) \
             else snap.get("host", "")
@@ -983,15 +1063,20 @@ class Sampler:
                          warn=th.get("warn"), crit=th.get("crit"))
             if url:
                 post_discord(url, format_alert(event))
+            if tg_token and tg_chat:
+                post_telegram(tg_token, tg_chat, format_alert_telegram(event))
 
         # container start/stop alerts. Diff every tick to keep the baseline
         # fresh; the state only changes when docker is actually repolled, so
         # this is quiet between polls. Only posts when enabled and a url is set.
         ctr_evs = container_events(snap.get("docker"), self._ctr_state)
         ctr_cfg = al.get("containers", {}) if isinstance(al, dict) else {}
-        if url and ctr_cfg.get("enabled", True):
+        if ctr_cfg.get("enabled", True):
             for ev in ctr_evs:
-                post_discord(url, format_container(ev, label))
+                if url:
+                    post_discord(url, format_container(ev, label))
+                if tg_token and tg_chat:
+                    post_telegram(tg_token, tg_chat, format_container_telegram(ev, label))
 
         # persist state when anything changed (only on transitions, not every tick)
         if self._alert_state != prev_alert or self._ctr_state != prev_ctr:
@@ -1124,9 +1209,10 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 self._json(200, [])
         elif path == "/api/categories":
-            self._json(200, load_categories())
+            self._json(200, load_categories())  # returns {"rules":[...], "overrides":{...}}
         elif path == "/api/config":
-            # public_config() strips the webhook URL before it goes over the wire
+            # auth-gated, so public_config() returns the full config (webhook URL
+            # included) for the settings UI to display and edit
             self._json(200, public_config(load_config()))
         elif path == "/events":
             self._sse()
@@ -1164,7 +1250,7 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return self._json(400, {"error": err})
         write_json(fname, data)
-        # echo the (secret-stripped) config back so the UI re-syncs; ok for rest
+        # echo the merged config back so the UI re-syncs; ok for the rest too
         if path == "/api/config":
             return self._json(200, public_config(load_config()))
         self._json(200, {"ok": True})

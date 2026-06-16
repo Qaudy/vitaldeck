@@ -1,6 +1,9 @@
-[
-  {
-    "name": "Media Stack",
-    "path": "/home/user/containers/media"
-  }
-]
+{
+  "rules": [
+    {
+      "name": "Media Stack",
+      "path": "/home/user/containers/media"
+    }
+  ],
+  "overrides": {}
+}

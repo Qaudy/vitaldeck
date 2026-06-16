@@ -134,10 +134,16 @@ Everything is edited in **⚙ settings** (top-right) and persisted to the data v
 |---|---|
 | Temp / CPU / Mem / Disk warn & crit | Thresholds for each metric. Leave blank to disable a level. |
 | Container notifications | Toggle start/stop alerts on or off. |
-| Webhook minimum severity | Only post to Discord at `warn` or only at `crit`. |
+| Webhook minimum severity | Only post at `warn` or only at `crit` — applies to all platforms. |
 | Discord webhook URL | Paste your `https://discord.com/api/webhooks/…` URL here. |
+| Telegram bot token | Token from @BotFather (format: `1234567890:ABCDEF…`). |
+| Telegram chat ID | Your chat or group ID. Message the bot then call `getUpdates` to find it. |
 
-To create a webhook: Discord **Server Settings → Integrations → Webhooks → New Webhook → Copy Webhook URL**.
+**Discord:** **Server Settings → Integrations → Webhooks → New Webhook → Copy Webhook URL**.
+
+**Telegram:** Message [@BotFather](https://t.me/BotFather) → `/newbot` → copy the token. Send any message to your new bot, then open `https://api.telegram.org/bot{TOKEN}/getUpdates` in a browser to find your `chat.id`.
+
+Both platforms fire on the same events; leaving a platform's fields blank disables it independently.
 
 ### Links
 
@@ -147,15 +153,31 @@ only `http(s)`, `ssh`, and relative paths are accepted.
 
 ### Categories
 
-Map a display name to a host path. Containers whose Docker Compose working
-directory equals or sits under that path are grouped under the name in the
-Containers panel. Anything unmatched falls under "Other".
+Containers are grouped in two ways — both configured here:
+
+**Path rules** — map a display name to a host path. Any container whose Docker
+Compose working directory equals or sits under that path is automatically placed
+under that category. Anything unmatched falls under "Other".
+
+**Manual assignments** — override or extend path rules per container. The
+Categories tab shows every currently-running container with a dropdown; pick a
+category name (sourced from your path rules) or leave it on **— auto —** to
+let path matching decide. Manual assignments take precedence over path rules.
+
+**Interface skip regex** — in **General → Server settings**, this pattern hides
+interfaces from the Network panel. The default skips:
+- `lo` — loopback
+- `docker\d+` — Docker bridge interfaces
+- `br-*` — bridge interfaces
+- `veth*` — virtual ethernet pairs
 
 ### Appearance
 
-Colour pickers for every UI accent — aurora blobs, sparkline colours, gauge
-ramp, etc. Changes preview live; **Save** persists them, **Reset** restores
-the shipped palette.
+Five built-in colour presets (**Aurora Dark**, **Synthwave**, **Ocean**,
+**Terminal**, **Ember**) are available at the top of the tab — clicking one
+fills all colour pickers and previews live. You can then fine-tune individual
+swatches. **Save** persists the result; **Reset** restores the Aurora Dark
+defaults.
 
 ---
 

@@ -15,7 +15,9 @@
     "containers": { "enabled": true },
     "webhook": {
       "discord_url": "",
-      "min_severity": "crit"
+      "min_severity": "crit",
+      "telegram_bot_token": "",
+      "telegram_chat_id": ""
     }
   }
 }

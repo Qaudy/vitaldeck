@@ -185,7 +185,32 @@
   .swatch input[type=color] { width: 38px; height: 28px; border: 1px solid var(--card-edge); border-radius: 6px; background: none; padding: 0; cursor: pointer; }
   .modal-foot { display: flex; gap: 10px; align-items: center; padding: 16px 22px; border-top: 1px solid var(--card-edge); position: sticky; bottom: 0; background: var(--card); border-radius: 0 0 18px 18px; }
   .modal-foot .msg { margin-left: auto; font-size: 12.5px; color: var(--dim); }
-  .toggle { display: flex; align-items: center; gap: 9px; font-size: 14px; }
+  .toggle { display: flex; align-items: center; gap: 9px; font-size: 14px; cursor: pointer; }
+
+  /* Fix browser-default select appearance so it matches the dark theme */
+  select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238d96ad' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 11px center;
+    padding-right: 32px;
+    cursor: pointer;
+  }
+  /* Text inputs should show the text cursor, not the hand */
+  input[type=text], input[type=password], input[type=number] { cursor: text; }
+  /* Checkboxes and their labels are interactive */
+  input[type=checkbox] { cursor: pointer; }
+
+  /* Manual container assignment rows in the Categories tab */
+  .ctr-assign-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .ctr-assign-row > span { font-family: var(--mono); font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ctr-assign-row select { width: 190px; flex: none; }
+
+  /* Theme preset colour-swatch buttons */
+  .theme-preset { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 7px 12px; }
+  .theme-preset .dots { display: flex; gap: 4px; }
+  .theme-preset .dots i { width: 11px; height: 11px; border-radius: 50%; display: block; flex: none; }
 </style>
 </head>
 <body>
@@ -300,7 +325,8 @@
       <label class="field"><span>Hide disks smaller than (GB)</span>
         <input type="number" id="setDiskMin" min="0" max="1000" step="1" value="1"></label>
       <label class="field"><span>Interface skip regex</span>
-        <input type="text" id="setIfaceSkip" placeholder="^(lo|docker\d+|…)$"></label>
+        <input type="text" id="setIfaceSkip" placeholder="^(lo|docker\d+|…)$">
+        <span style="font-size:11px;color:var(--dim);margin-top:5px;display:block">Interfaces matching this pattern are hidden from the Network panel. Default skips: <code style="font-family:var(--mono)">lo</code> (loopback), <code style="font-family:var(--mono)">docker\d+</code> (docker bridges), <code style="font-family:var(--mono)">br-*</code> (bridge interfaces), <code style="font-family:var(--mono)">veth*</code> (veth pairs).</span></label>
       <hr style="border:none;border-top:1px solid var(--card-edge);margin:18px 0">
       <p style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:12px">Change password</p>
       <label class="field"><span>Current password</span><input type="password" id="cpCurrent" autocomplete="current-password"></label>
@@ -317,6 +343,13 @@
         <select id="minSev"><option value="warn">warn</option><option value="crit">crit</option></select></label>
       <label class="field" style="margin-top:8px"><span>Discord webhook URL</span>
         <input type="text" id="webhookUrl" placeholder="https://discord.com/api/webhooks/…" autocomplete="off"></label>
+      <hr style="border:none;border-top:1px solid var(--card-edge);margin:18px 0">
+      <p style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:12px">Telegram</p>
+      <label class="field"><span>Bot token</span>
+        <input type="text" id="telegramToken" placeholder="1234567890:ABCDEF…" autocomplete="off"></label>
+      <label class="field"><span>Chat ID</span>
+        <input type="text" id="telegramChatId" placeholder="-1001234567890" autocomplete="off"></label>
+      <p style="font-size:12px;color:var(--dim);margin-top:2px">Create a bot with @BotFather to get a token. Message the bot, then call <code style="font-family:var(--mono)">getUpdates</code> to find your Chat ID. Both Discord and Telegram use the same severity minimum above.</p>
     </div>
 
     <div class="tabpane" data-pane="links" hidden>
@@ -325,14 +358,22 @@
     </div>
 
     <div class="tabpane" data-pane="cats" hidden>
+      <p style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:10px">Path rules <span style="font-size:10px;text-transform:none;letter-spacing:0;margin-left:6px">auto-assign by compose directory</span></p>
       <div id="catRows"></div>
-      <button class="btn ghost" id="addCat" type="button">+ Add category</button>
-      <p class="lead" style="margin-top:8px">A container is grouped under a rule when its compose directory equals or sits under that path.</p>
+      <button class="btn ghost" id="addCat" type="button">+ Add rule</button>
+      <p style="font-size:12px;color:var(--dim);margin-top:8px">A container is grouped under a rule when its compose directory equals or sits under the configured path.</p>
+      <hr style="border:none;border-top:1px solid var(--card-edge);margin:18px 0">
+      <p style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:10px">Manual assignments <span style="font-size:10px;text-transform:none;letter-spacing:0;margin-left:6px">overrides path rules</span></p>
+      <div id="ctrCatRows"><span style="color:var(--dim);font-size:13px">Loading…</span></div>
+      <p style="font-size:12px;color:var(--dim);margin-top:8px">Set <em style="font-style:normal;color:var(--text)">— auto —</em> to remove an override and fall back to path rules.</p>
     </div>
 
     <div class="tabpane" data-pane="theme" hidden>
+      <p style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:10px">Presets</p>
+      <div id="themePresets" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px"></div>
+      <hr style="border:none;border-top:1px solid var(--card-edge);margin:0 0 16px">
       <div id="themeGrid"></div>
-      <button class="btn ghost" id="resetTheme" type="button">Reset to defaults</button>
+      <button class="btn ghost" id="resetTheme" type="button" style="margin-top:8px">Reset to defaults</button>
     </div>
 
     <div class="modal-foot">
@@ -553,6 +594,15 @@ const THEME_FIELDS = ["bg","text","dim","cyan","violet","pink","green","amber","
 const THEME_DEFAULTS = {bg:"#07080f",text:"#e8ecf4",dim:"#8d96ad",cyan:"#38e1ff",
   violet:"#a06bff",pink:"#ff5fa8",green:"#3ddc84",amber:"#ffb454",red:"#ff5468",
   aurora1:"#1450ff",aurora2:"#8a2bff",aurora3:"#00d4c0",spark_cpu:"#38e1ff",spark_tx:"#ff5fa8"};
+
+// Built-in theme presets — selecting one fills all colour pickers and previews live.
+const THEMES = [
+  { name: "Aurora Dark", colors: {bg:"#07080f",text:"#e8ecf4",dim:"#8d96ad",cyan:"#38e1ff",violet:"#a06bff",pink:"#ff5fa8",green:"#3ddc84",amber:"#ffb454",red:"#ff5468",aurora1:"#1450ff",aurora2:"#8a2bff",aurora3:"#00d4c0",spark_cpu:"#38e1ff",spark_tx:"#ff5fa8"} },
+  { name: "Synthwave",   colors: {bg:"#0d0514",text:"#f0e6ff",dim:"#8866aa",cyan:"#ff66ff",violet:"#cc44ff",pink:"#ff44aa",green:"#44ffaa",amber:"#ffaa44",red:"#ff3366",aurora1:"#660099",aurora2:"#990066",aurora3:"#440099",spark_cpu:"#ff66ff",spark_tx:"#ff44aa"} },
+  { name: "Ocean",       colors: {bg:"#040d1a",text:"#d8eeff",dim:"#5580a8",cyan:"#00ddff",violet:"#3388ff",pink:"#00ffee",green:"#00e8aa",amber:"#ffcc44",red:"#ff4466",aurora1:"#001a66",aurora2:"#004488",aurora3:"#006688",spark_cpu:"#00ddff",spark_tx:"#00ffee"} },
+  { name: "Terminal",    colors: {bg:"#000800",text:"#00ff44",dim:"#005522",cyan:"#00ff88",violet:"#00cc44",pink:"#44ff88",green:"#00ff44",amber:"#aaff44",red:"#ff4444",aurora1:"#001100",aurora2:"#002200",aurora3:"#003300",spark_cpu:"#00ff88",spark_tx:"#44ff88"} },
+  { name: "Ember",       colors: {bg:"#0f0500",text:"#ffeecc",dim:"#996644",cyan:"#ff8844",violet:"#ff6633",pink:"#ff4422",green:"#88cc44",amber:"#ffbb22",red:"#ff2200",aurora1:"#442200",aurora2:"#662200",aurora3:"#881100",spark_cpu:"#ff8844",spark_tx:"#ff4422"} },
+];
 const ALERT_METRICS = [["temp","°C"],["cpu","%"],["mem","%"],["disk","%"]];
 
 // small JSON fetch wrapper; cookies ride along automatically (same-origin)
@@ -650,9 +700,33 @@ $("logoutBtn").addEventListener("click", async () => {
 /* ---------- settings modal ---------- */
 let committedTheme = {};   // theme as last saved, to revert an unsaved preview
 
+function buildCtrCatRows(containers, rules, overrides) {
+  const catNames = [...new Set([
+    ...rules.map(r => r.name),
+    ...Object.values(overrides || {}),
+  ].filter(Boolean))];
+  const el = $("ctrCatRows");
+  if (!containers || containers.length === 0) {
+    el.innerHTML = '<span style="color:var(--dim);font-size:13px">No containers — is Docker running?</span>';
+    return;
+  }
+  el.innerHTML = containers.map(c => {
+    const cur = (overrides || {})[c.name] || "";
+    const extra = cur && !catNames.includes(cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : "";
+    const opts = `<option value="">— auto —</option>` +
+      catNames.map(n => `<option value="${esc(n)}"${cur === n ? " selected" : ""}>${esc(n)}</option>`).join("") +
+      extra;
+    return `<div class="ctr-assign-row" data-ctr="${esc(c.name)}">
+      <span title="${esc(c.name)}">${esc(c.name)}</span>
+      <select>${opts}</select>
+    </div>`;
+  }).join("");
+}
+
 function openSettings() {
-  Promise.all([api("GET","/api/config"), api("GET","/api/links"), api("GET","/api/categories")])
-    .then(([c, l, cat]) => {
+  Promise.all([api("GET","/api/config"), api("GET","/api/links"),
+               api("GET","/api/categories"), api("GET","/api/stats")])
+    .then(([c, l, cat, st]) => {
       const cfg = c.data || {}, alerts = cfg.alerts || {};
       $("setName").value    = cfg.name    || "";
       $("setTagline").value = cfg.tagline || "";
@@ -673,18 +747,41 @@ function openSettings() {
       }).join("");
       $("ctrToggle").checked = !((alerts.containers || {}).enabled === false);
       const wh = alerts.webhook || {};
-      $("minSev").value     = wh.min_severity || "crit";
-      $("webhookUrl").value = wh.discord_url  || "";
-      // links + categories
+      $("minSev").value        = wh.min_severity       || "crit";
+      $("webhookUrl").value    = wh.discord_url         || "";
+      $("telegramToken").value = wh.telegram_bot_token  || "";
+      $("telegramChatId").value= wh.telegram_chat_id    || "";
+      // links
       $("linkRows").innerHTML = ""; (l.data || []).forEach(addLinkRow);
-      $("catRows").innerHTML = ""; (cat.data || []).forEach(addCatRow);
-      // theme: merge saved over defaults, build swatches, remember for revert
+      // categories — new format: {rules, overrides}; fall back for old plain array
+      const catData  = cat.data || {};
+      const rules    = Array.isArray(catData) ? catData : (catData.rules    || []);
+      const overrides= Array.isArray(catData) ? {}      : (catData.overrides || {});
+      $("catRows").innerHTML = ""; rules.forEach(addCatRow);
+      const containers = (st.ok && st.data && st.data.docker) || [];
+      buildCtrCatRows(containers, rules, overrides);
+      // theme: merge saved over defaults, build swatches + presets, remember for revert
       committedTheme = Object.assign({}, THEME_DEFAULTS, cfg.theme || {});
       $("themeGrid").innerHTML = THEME_FIELDS.map(k =>
         `<div class="swatch"><label>${k.replace("_"," ")}</label>
            <input type="color" id="th_${k}" value="${committedTheme[k]}"></div>`).join("");
       THEME_FIELDS.forEach(k => $("th_" + k).addEventListener("input", e =>
         document.documentElement.style.setProperty("--" + k, e.target.value)));
+      $("themePresets").innerHTML = THEMES.map((t, i) =>
+        `<button class="btn ghost theme-preset" data-i="${i}" type="button">
+           <span class="dots">${["cyan","violet","pink","green"].map(k =>
+             `<i style="background:${t.colors[k]}"></i>`).join("")}</span>${esc(t.name)}
+         </button>`).join("");
+      $("themePresets").querySelectorAll(".theme-preset").forEach(btn =>
+        btn.addEventListener("click", () => {
+          const colors = THEMES[parseInt(btn.dataset.i)].colors;
+          THEME_FIELDS.forEach(k => {
+            if (colors[k]) {
+              $("th_" + k).value = colors[k];
+              document.documentElement.style.setProperty("--" + k, colors[k]);
+            }
+          });
+        }));
       $("saveMsg").textContent = "";
       $("settings").hidden = false;
     });
@@ -725,7 +822,12 @@ async function saveSettings() {
   const num = v => v.trim() === "" ? null : Number(v);
   const alerts = {
     containers: { enabled: $("ctrToggle").checked },
-    webhook: { discord_url: $("webhookUrl").value.trim(), min_severity: $("minSev").value },
+    webhook: {
+      discord_url:        $("webhookUrl").value.trim(),
+      min_severity:       $("minSev").value,
+      telegram_bot_token: $("telegramToken").value.trim(),
+      telegram_chat_id:   $("telegramChatId").value.trim(),
+    },
   };
   for (const [m] of ALERT_METRICS)
     alerts[m] = { warn: num($("al_" + m + "_warn").value), crit: num($("al_" + m + "_crit").value) };
@@ -748,10 +850,16 @@ async function saveSettings() {
     const i = r.querySelectorAll("input");
     return { name: i[0].value, url: i[1].value, desc: i[2].value, icon: i[3].value };
   });
-  const cats = [...$("catRows").children].map(r => {
+  const catRules = [...$("catRows").children].map(r => {
     const i = r.querySelectorAll("input");
     return { name: i[0].value, path: i[1].value };
   });
+  const catOverrides = {};
+  for (const row of $("ctrCatRows").querySelectorAll(".ctr-assign-row")) {
+    const name = row.dataset.ctr, cat = row.querySelector("select").value;
+    if (name && cat) catOverrides[name] = cat;
+  }
+  const cats = { rules: catRules, overrides: catOverrides };
 
   $("saveBtn").disabled = true; $("saveMsg").textContent = "Saving…";
   const [cr, lr, kr] = await Promise.all([
