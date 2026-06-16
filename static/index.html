@@ -207,6 +207,32 @@
   /* Checkboxes and their labels are interactive */
   input[type=checkbox] { cursor: pointer; }
 
+  /* Custom dropdown widget (.cselect). Native <select> popups can't be styled
+     on Linux/Chromium, so enhanceSelect() hides the real <select> and renders
+     this fully-themed overlay (button + menu) in its place. All colours are
+     theme vars so the 5 presets stay correct. */
+  .cselect { position: relative; width: 100%; }
+  .cselect select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; pointer-events: none; }
+  .cselect-btn {
+    width: 100%; text-align: left; cursor: pointer; font: inherit; font-size: 14px;
+    background: rgba(255,255,255,.04); border: 1px solid var(--card-edge);
+    border-radius: 9px; padding: 9px 32px 9px 11px; color: var(--text);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238d96ad' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 11px center;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .cselect.open .cselect-btn, .cselect-btn:focus { outline: none; border-color: var(--cyan); }
+  .cselect-menu {
+    position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 60;
+    background: var(--bg); border: 1px solid var(--card-edge); border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0,0,0,.5); padding: 4px; max-height: 240px; overflow-y: auto;
+  }
+  .cselect-menu[hidden] { display: none; }
+  .cselect-opt { padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 14px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cselect-opt:hover, .cselect-opt.active { background: rgba(255,255,255,.07); }
+  .cselect-opt.sel { color: var(--cyan); }
+  .ctr-assign-row .cselect { width: 190px; flex: none; }
+
   /* Manual container assignment rows in the Categories tab */
   .ctr-assign-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
   .ctr-assign-row > span { font-family: var(--mono); font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -730,6 +756,66 @@ let catNames = [];        // user-created category names
 let catContainers = [];   // containers from /api/stats, for the assign rows
 let catOverrides = {};    // {container_name: category}
 
+/* ---------- custom dropdown widget ----------
+   Native <select> popups can't be styled on Linux/Chromium, so enhanceSelect()
+   hides the real <select> and drives a themed overlay (button + menu) from it.
+   The <select> stays in the DOM, so existing `.value` reads and change handlers
+   keep working. Idempotent — safe to call again on an already-enhanced select. */
+let _openSelect = null;   // the currently-open .cselect wrapper (for outside-click)
+
+function _closeOpenSelect() {
+  if (!_openSelect) return;
+  _openSelect.querySelector(".cselect-menu").hidden = true;
+  _openSelect.classList.remove("open");
+  _openSelect = null;
+}
+document.addEventListener("click", _closeOpenSelect);
+document.addEventListener("keydown", e => { if (e.key === "Escape") _closeOpenSelect(); });
+
+function enhanceSelect(sel) {
+  if (!sel || sel.dataset.enhanced) return;
+  sel.dataset.enhanced = "1";
+  const wrap = document.createElement("div");
+  wrap.className = "cselect";
+  sel.parentNode.insertBefore(wrap, sel);
+  wrap.appendChild(sel);
+  const btn = document.createElement("button");
+  btn.type = "button"; btn.className = "cselect-btn";
+  const menu = document.createElement("div");
+  menu.className = "cselect-menu"; menu.hidden = true;
+  wrap.append(btn, menu);
+
+  const curLabel = () => {
+    const o = [...sel.options].find(o => o.value === sel.value);
+    return o ? o.textContent : "—";
+  };
+  const syncBtn = () => { btn.textContent = curLabel(); };
+  const open = () => {
+    _closeOpenSelect();
+    menu.innerHTML = "";
+    [...sel.options].forEach(o => {
+      const item = document.createElement("div");
+      item.className = "cselect-opt" + (o.value === sel.value ? " sel" : "");
+      item.textContent = o.textContent;
+      item.addEventListener("click", () => {
+        if (sel.value !== o.value) {
+          sel.value = o.value;
+          sel.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        syncBtn(); _closeOpenSelect();
+      });
+      menu.appendChild(item);
+    });
+    menu.hidden = false; wrap.classList.add("open"); _openSelect = wrap;
+  };
+  btn.addEventListener("click", e => {
+    e.stopPropagation();            // don't let the document closer eat this click
+    menu.hidden ? open() : _closeOpenSelect();
+  });
+  sel.addEventListener("change", syncBtn);  // resync if value changes elsewhere
+  syncBtn();
+}
+
 function renderCatChips() {
   $("catChips").innerHTML = catNames.map(n =>
     `<span class="cat-chip" data-name="${esc(n)}">${esc(n)}<button type="button" title="Remove category">✕</button></span>`).join("");
@@ -773,10 +859,12 @@ function renderCtrAssign() {
     </div>`;
   }).join("");
   el.querySelectorAll(".ctr-assign-row").forEach(row => {
-    row.querySelector("select").addEventListener("change", e => {
+    const sel = row.querySelector("select");
+    sel.addEventListener("change", e => {
       if (e.target.value) catOverrides[row.dataset.ctr] = e.target.value;
       else delete catOverrides[row.dataset.ctr];
     });
+    enhanceSelect(sel);   // these selects are rebuilt each render → enhance fresh
   });
 }
 
@@ -850,6 +938,13 @@ function openSettings() {
             }
           });
         }));
+      // enhance the static selects into themed dropdowns; first call builds the
+      // overlay, later opens are no-ops, so fire change to resync the button to
+      // the value just loaded above
+      ["setTempUnit", "minSev"].forEach(id => {
+        enhanceSelect($(id));
+        $(id).dispatchEvent(new Event("change"));
+      });
       $("saveMsg").textContent = "";
       $("settings").hidden = false;
     });
