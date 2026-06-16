@@ -204,27 +204,36 @@ def disks():
 
 
 def load_categories():
-    """Load category rules and manual overrides from categories.json.
+    """Load categories, manual assignments, and (optional) path rules.
 
-    Returns {"rules": [{name, path}, ...], "overrides": {container_name: category}}.
-    Backward-compatible with the old plain-array format (treated as rules-only).
-    Read fresh on every docker poll so edits apply without a restart.
+    Returns {"categories": [name, ...], "rules": [{name, path}, ...],
+             "overrides": {container_name: category}}.
+    `categories` is the first-class list of user-created category names that the
+    assign-a-container dropdowns are populated from — assignment by name, no
+    paths. `overrides` maps a container to one of those names. `rules` is the
+    legacy path-based auto-assignment, kept for the optional Advanced section.
+    Backward-compatible with the old plain-array (rules-only) format and the
+    earlier {rules, overrides} shape. Read fresh on every docker poll so edits
+    apply without a restart.
     """
+    empty = {"categories": [], "rules": [], "overrides": {}}
     try:
         with open(data_path("categories.json")) as f:
             data = json.load(f)
         if isinstance(data, list):
-            return {"rules": data, "overrides": {}}
+            return {"categories": [], "rules": data, "overrides": {}}
         if isinstance(data, dict):
-            rules = data.get("rules", [])
+            cats      = data.get("categories", [])
+            rules     = data.get("rules", [])
             overrides = data.get("overrides", {})
             return {
-                "rules":     rules     if isinstance(rules, list)     else [],
-                "overrides": overrides if isinstance(overrides, dict) else {},
+                "categories": cats      if isinstance(cats, list)      else [],
+                "rules":      rules     if isinstance(rules, list)     else [],
+                "overrides":  overrides if isinstance(overrides, dict) else {},
             }
-        return {"rules": [], "overrides": {}}
+        return empty
     except (OSError, ValueError):
-        return {"rules": [], "overrides": {}}
+        return empty
 
 
 def categorize(workdir, name, rules, overrides):
@@ -590,21 +599,31 @@ def sanitize_links(incoming):
 
 
 def sanitize_categories(incoming):
-    """Validate a categories payload (rules + overrides), or (None, error).
+    """Validate a categories payload, or (None, error).
 
-    Accepts both the new dict format {"rules": [...], "overrides": {...}} and
-    the legacy plain-array format (treated as rules-only, no overrides).
+    Accepts {"categories": [...], "rules": [...], "overrides": {...}} (any key
+    optional) and the legacy plain-array format (treated as rules-only).
+    `categories` is the list of user-created category names (deduped, trimmed);
+    `overrides` assigns a container to one by name; `rules` is legacy path-based.
     """
     if isinstance(incoming, list):
         incoming = {"rules": incoming, "overrides": {}}
     if not isinstance(incoming, dict):
         return None, "categories must be an object or array"
+    categories_in = incoming.get("categories", [])
     rules_in    = incoming.get("rules", [])
     overrides_in = incoming.get("overrides", {})
+    if not isinstance(categories_in, list):
+        return None, "categories must be an array"
     if not isinstance(rules_in, list):
         return None, "rules must be an array"
     if not isinstance(overrides_in, dict):
         return None, "overrides must be an object"
+    categories = []
+    for item in categories_in:
+        name = str(item or "").strip()[:80]
+        if name and name not in categories:
+            categories.append(name)
     rules = []
     for item in rules_in:
         if not isinstance(item, dict):
@@ -620,7 +639,7 @@ def sanitize_categories(incoming):
             cat_str = str(cat or "").strip()[:80]
             if cat_str:
                 overrides[cname] = cat_str
-    return {"rules": rules, "overrides": overrides}, None
+    return {"categories": categories, "rules": rules, "overrides": overrides}, None
 
 
 def _num_or_none(v):

@@ -21,8 +21,20 @@ All notable changes to vitaldeck are documented here.
   Settings → General lists what the default pattern skips (loopback, docker bridges, veth pairs).
 - **Default example links** updated to Google and the vitaldeck GitHub page.
 
+### Changed — Phase 3
+
+- **Categories are now name-first, not path-first.** Settings → Categories leads with a
+  "Your categories" box where you create category names directly, then an "Assign
+  containers" list lets you drop each container into a category from a dropdown — no more
+  typing compose paths. The old path-based auto-assignment still exists under a collapsed
+  "Advanced" section. `categories.json` gains a top-level `categories` name list; the
+  legacy plain-array and `{rules, overrides}` formats are still read and migrated.
+
 ### Fixed — Phase 3
 
+- **Dropdown readability** — `<select>` controls now use a solid dark background and
+  explicitly styled `<option>`s, fixing the white box with invisible (until hovered)
+  text seen on some browsers.
 - **Select element styling** — `appearance: none` + custom SVG chevron so dropdowns match
   the dark theme on all browsers instead of rendering with OS-default chrome.
 - **Cursor inconsistencies** — text inputs now show the text cursor; checkboxes and their

@@ -187,16 +187,23 @@
   .modal-foot .msg { margin-left: auto; font-size: 12.5px; color: var(--dim); }
   .toggle { display: flex; align-items: center; gap: 9px; font-size: 14px; cursor: pointer; }
 
-  /* Fix browser-default select appearance so it matches the dark theme */
+  /* Fix browser-default select appearance so it matches the dark theme.
+     The shared input rule above sets a translucent white background, which some
+     browsers composite as solid white — with near-white text that left the
+     control unreadable until hovered. Force a solid dark background here, and
+     style the <option> popup explicitly (options don't inherit, so they fall
+     back to OS white-on-white otherwise). var(--bg) keeps it theme-correct. */
   select {
     appearance: none;
     -webkit-appearance: none;
+    background-color: var(--bg);
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238d96ad' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 11px center;
     padding-right: 32px;
     cursor: pointer;
   }
+  select option { background-color: var(--bg); color: var(--text); }
   /* Text inputs should show the text cursor, not the hand */
   input[type=text], input[type=password], input[type=number] { cursor: text; }
   /* Checkboxes and their labels are interactive */
@@ -206,6 +213,16 @@
   .ctr-assign-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
   .ctr-assign-row > span { font-family: var(--mono); font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ctr-assign-row select { width: 190px; flex: none; }
+
+  /* Categories tab: create-a-category row + removable name chips */
+  .cat-add { display: flex; gap: 8px; margin-bottom: 12px; }
+  .cat-add input { flex: 1; }
+  .cat-add .btn { flex: none; white-space: nowrap; }
+  .cat-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .cat-chips:empty::after { content: "No categories yet — add one above."; color: var(--dim); font-size: 13px; }
+  .cat-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 999px; border: 1px solid var(--card-edge); background: rgba(255,255,255,.04); font-size: 13px; }
+  .cat-chip button { cursor: pointer; background: none; border: none; color: var(--dim); font-size: 15px; line-height: 1; padding: 0 4px; }
+  .cat-chip button:hover { color: var(--red); }
 
   /* Theme preset colour-swatch buttons */
   .theme-preset { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 7px 12px; }
@@ -358,14 +375,22 @@
     </div>
 
     <div class="tabpane" data-pane="cats" hidden>
-      <p style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:10px">Path rules <span style="font-size:10px;text-transform:none;letter-spacing:0;margin-left:6px">auto-assign by compose directory</span></p>
-      <div id="catRows"></div>
-      <button class="btn ghost" id="addCat" type="button">+ Add rule</button>
-      <p style="font-size:12px;color:var(--dim);margin-top:8px">A container is grouped under a rule when its compose directory equals or sits under the configured path.</p>
+      <p style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:10px">Your categories</p>
+      <div class="cat-add">
+        <input type="text" id="newCatName" placeholder="e.g. Media, Networking, Tools" maxlength="80">
+        <button class="btn ghost" id="addCatName" type="button">+ Add</button>
+      </div>
+      <div id="catChips" class="cat-chips"></div>
       <hr style="border:none;border-top:1px solid var(--card-edge);margin:18px 0">
-      <p style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:10px">Manual assignments <span style="font-size:10px;text-transform:none;letter-spacing:0;margin-left:6px">overrides path rules</span></p>
+      <p style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:10px">Assign containers</p>
       <div id="ctrCatRows"><span style="color:var(--dim);font-size:13px">Loading…</span></div>
-      <p style="font-size:12px;color:var(--dim);margin-top:8px">Set <em style="font-style:normal;color:var(--text)">— auto —</em> to remove an override and fall back to path rules.</p>
+      <p style="font-size:12px;color:var(--dim);margin-top:8px">Pick a category for each container. Choose <em style="font-style:normal;color:var(--text)">— none —</em> to leave it ungrouped (shows under “Other”).</p>
+      <details style="margin-top:18px">
+        <summary style="cursor:pointer;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)">Advanced: auto-assign by path</summary>
+        <p style="font-size:12px;color:var(--dim);margin:10px 0">Optional. Auto-group containers by their Docker Compose directory. A container is grouped under a rule when its compose directory equals or sits under the configured path. Manual assignments above always take precedence.</p>
+        <div id="catRows"></div>
+        <button class="btn ghost" id="addCat" type="button">+ Add rule</button>
+      </details>
     </div>
 
     <div class="tabpane" data-pane="theme" hidden>
@@ -700,20 +725,48 @@ $("logoutBtn").addEventListener("click", async () => {
 /* ---------- settings modal ---------- */
 let committedTheme = {};   // theme as last saved, to revert an unsaved preview
 
-function buildCtrCatRows(containers, rules, overrides) {
-  const catNames = [...new Set([
-    ...rules.map(r => r.name),
-    ...Object.values(overrides || {}),
-  ].filter(Boolean))];
+// Categories working state (committed on Save). Container assignment is by
+// name, not path: pick a category from `catNames` for each container, stored in
+// `catOverrides` ({container: category}). Path rules live in the Advanced area.
+let catNames = [];        // user-created category names
+let catContainers = [];   // containers from /api/stats, for the assign rows
+let catOverrides = {};    // {container_name: category}
+
+function renderCatChips() {
+  $("catChips").innerHTML = catNames.map(n =>
+    `<span class="cat-chip" data-name="${esc(n)}">${esc(n)}<button type="button" title="Remove category">✕</button></span>`).join("");
+  $("catChips").querySelectorAll(".cat-chip button").forEach(btn =>
+    btn.addEventListener("click", () => removeCat(btn.parentElement.dataset.name)));
+}
+
+function addCat(name) {
+  name = (name || "").trim().slice(0, 80);
+  if (!name || catNames.includes(name)) return;
+  catNames.push(name);
+  renderCatChips();
+  renderCtrAssign();
+}
+
+function removeCat(name) {
+  catNames = catNames.filter(n => n !== name);
+  for (const k of Object.keys(catOverrides))   // drop assignments to it
+    if (catOverrides[k] === name) delete catOverrides[k];
+  renderCatChips();
+  renderCtrAssign();
+}
+
+function renderCtrAssign() {
   const el = $("ctrCatRows");
-  if (!containers || containers.length === 0) {
+  if (!catContainers || catContainers.length === 0) {
     el.innerHTML = '<span style="color:var(--dim);font-size:13px">No containers — is Docker running?</span>';
     return;
   }
-  el.innerHTML = containers.map(c => {
-    const cur = (overrides || {})[c.name] || "";
+  el.innerHTML = catContainers.map(c => {
+    const cur = catOverrides[c.name] || "";
+    // an assignment to a name not in the list (e.g. from a path rule) is still
+    // shown so it isn't silently dropped
     const extra = cur && !catNames.includes(cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : "";
-    const opts = `<option value="">— auto —</option>` +
+    const opts = `<option value="">— none —</option>` +
       catNames.map(n => `<option value="${esc(n)}"${cur === n ? " selected" : ""}>${esc(n)}</option>`).join("") +
       extra;
     return `<div class="ctr-assign-row" data-ctr="${esc(c.name)}">
@@ -721,6 +774,12 @@ function buildCtrCatRows(containers, rules, overrides) {
       <select>${opts}</select>
     </div>`;
   }).join("");
+  el.querySelectorAll(".ctr-assign-row").forEach(row => {
+    row.querySelector("select").addEventListener("change", e => {
+      if (e.target.value) catOverrides[row.dataset.ctr] = e.target.value;
+      else delete catOverrides[row.dataset.ctr];
+    });
+  });
 }
 
 function openSettings() {
@@ -753,13 +812,24 @@ function openSettings() {
       $("telegramChatId").value= wh.telegram_chat_id    || "";
       // links
       $("linkRows").innerHTML = ""; (l.data || []).forEach(addLinkRow);
-      // categories — new format: {rules, overrides}; fall back for old plain array
+      // categories — {categories, rules, overrides}; tolerate the old plain
+      // array (rules-only) and the earlier {rules, overrides} shape
       const catData  = cat.data || {};
-      const rules    = Array.isArray(catData) ? catData : (catData.rules    || []);
-      const overrides= Array.isArray(catData) ? {}      : (catData.overrides || {});
+      const rules    = Array.isArray(catData) ? catData : (catData.rules     || []);
+      catOverrides   = Object.assign({}, Array.isArray(catData) ? {} : (catData.overrides || {}));
+      catNames       = Array.isArray(catData) ? [] : [...(catData.categories || [])];
+      // migrate setups that predate the categories list: seed it from any names
+      // already in use (rule names + assignment values) so nothing disappears
+      if (catNames.length === 0) {
+        catNames = [...new Set([
+          ...rules.map(r => r.name),
+          ...Object.values(catOverrides),
+        ].filter(Boolean))];
+      }
+      catContainers = (st.ok && st.data && st.data.docker) || [];
+      renderCatChips();
+      renderCtrAssign();
       $("catRows").innerHTML = ""; rules.forEach(addCatRow);
-      const containers = (st.ok && st.data && st.data.docker) || [];
-      buildCtrCatRows(containers, rules, overrides);
       // theme: merge saved over defaults, build swatches + presets, remember for revert
       committedTheme = Object.assign({}, THEME_DEFAULTS, cfg.theme || {});
       $("themeGrid").innerHTML = THEME_FIELDS.map(k =>
@@ -854,12 +924,9 @@ async function saveSettings() {
     const i = r.querySelectorAll("input");
     return { name: i[0].value, path: i[1].value };
   });
-  const catOverrides = {};
-  for (const row of $("ctrCatRows").querySelectorAll(".ctr-assign-row")) {
-    const name = row.dataset.ctr, cat = row.querySelector("select").value;
-    if (name && cat) catOverrides[name] = cat;
-  }
-  const cats = { rules: catRules, overrides: catOverrides };
+  // catNames + catOverrides are the live working state (kept current by the
+  // chip add/remove and per-row select handlers)
+  const cats = { categories: catNames, rules: catRules, overrides: catOverrides };
 
   $("saveBtn").disabled = true; $("saveMsg").textContent = "Saving…";
   const [cr, lr, kr] = await Promise.all([
@@ -907,6 +974,9 @@ $("settingsCancel").addEventListener("click", closeSettings);
 $("saveBtn").addEventListener("click", saveSettings);
 $("addLink").addEventListener("click", () => addLinkRow());
 $("addCat").addEventListener("click", () => addCatRow());
+function commitNewCat() { addCat($("newCatName").value); $("newCatName").value = ""; $("newCatName").focus(); }
+$("addCatName").addEventListener("click", commitNewCat);
+$("newCatName").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); commitNewCat(); } });
 $("resetTheme").addEventListener("click", () => {
   THEME_FIELDS.forEach(k => { $("th_" + k).value = THEME_DEFAULTS[k];
     document.documentElement.style.setProperty("--" + k, THEME_DEFAULTS[k]); });

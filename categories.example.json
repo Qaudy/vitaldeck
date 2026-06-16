@@ -1,9 +1,5 @@
 {
-  "rules": [
-    {
-      "name": "Media Stack",
-      "path": "/home/user/containers/media"
-    }
-  ],
-  "overrides": {}
+  "categories": [],
+  "overrides": {},
+  "rules": []
 }
