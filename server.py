@@ -10,6 +10,7 @@ container state, and streams everything to the browser over SSE.
 
 import base64
 import copy
+import glob
 import hashlib
 import hmac
 import http.cookies
@@ -39,6 +40,10 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PORT", "88
 TICK = 2.0          # seconds between samples
 DOCKER_EVERY = 2    # sample docker every N ticks → every 4s (it forks a
                     # process, so kept off the every-tick /proc hot path)
+# SMART is the heaviest sample: a smartctl exec per drive, and a sleeping disk
+# can take seconds to answer, so it's polled far less often than docker.
+SMART_EVERY = 30    # sample SMART every N ticks → ~60s at the default 2s tick
+SMART_TIMEOUT = 8   # seconds per smartctl call before that drive is skipped
 
 # Ceiling on simultaneous SSE streams (one per open dashboard tab). Each stream
 # holds a thread for its whole lifetime, so an unbounded flood is a DoS surface
@@ -73,6 +78,9 @@ DEFAULTS = {
     # disk bar turns amber above this % (separate from alerts.disk.warn, which
     # triggers Discord; these are independent thresholds)
     "disk_warn_pct": 80,
+    # show the SMART disk-health panel when smartctl + device access are present;
+    # set false to hide it even on hosts where SMART data is readable
+    "smart_enabled": True,
     # --- tier 3: consumed by the server at startup; restart to apply ---
     "tick_seconds": 2.0,        # sampler + SSE push interval
     "disk_min_gb":  1,          # hide volumes smaller than this (in GB)
@@ -287,6 +295,93 @@ def docker_ps():
         return None
 
 
+def smart_data():
+    """Per-drive SMART health via smartctl, or None when it can't be read.
+
+    Returns None (not []) if smartctl is missing, no device is reachable, or
+    every probe fails — the frontend treats None as "SMART unavailable" and
+    hides the panel, so the dashboard degrades cleanly on hosts without
+    smartmontools or the /dev access + SYS_RAWIO capability the probes need.
+    Modelled on docker_ps(): shell out, hard per-call timeout, swallow errors.
+    """
+    if not shutil.which("smartctl"):
+        return None
+    rows = []
+    for dev in _smart_scan():
+        info = _smart_probe(dev)
+        if info is not None:
+            rows.append(info)
+    return rows or None
+
+
+def _smart_scan():
+    """Candidate device nodes: `smartctl --scan`, else an obvious /dev glob."""
+    found = []
+    try:
+        r = subprocess.run(["smartctl", "--scan", "-j"],
+                           capture_output=True, text=True, timeout=SMART_TIMEOUT)
+        for d in (json.loads(r.stdout or "{}").get("devices") or []):
+            if d.get("name"):
+                found.append(d["name"])
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+    if not found:
+        # --scan comes up empty on some USB bridges/controllers; fall back to the
+        # obvious block-device nodes and let the per-device probe filter them.
+        found = sorted(glob.glob("/dev/sd[a-z]") +
+                       glob.glob("/dev/nvme[0-9]n[0-9]"))
+    return found
+
+
+def _smart_probe(dev):
+    """Probe one device → a small dict, or None if it speaks no SMART."""
+    try:
+        r = subprocess.run(["smartctl", "-j", "-H", "-i", "-A", dev],
+                           capture_output=True, text=True, timeout=SMART_TIMEOUT)
+        d = json.loads(r.stdout or "{}")
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return None
+    # a device with no SMART support has no smart_status block — the reliable
+    # "skip this one" signal (smartctl still exits non-zero for other reasons).
+    status = d.get("smart_status")
+    if not isinstance(status, dict):
+        return None
+    passed = bool(status.get("passed"))
+
+    temp = d.get("temperature") or {}
+    temp_c = temp.get("current") if isinstance(temp, dict) else None
+    poh = d.get("power_on_time") or {}
+    hours = poh.get("hours") if isinstance(poh, dict) else None
+
+    # wear/error indicator differs between NVMe and ATA; surface the most useful
+    # one and flag a warning when it's failing, hot-running, or worn.
+    detail, warn = "", not passed
+    nvme = d.get("nvme_smart_health_information_log")
+    if isinstance(nvme, dict):
+        used, errs = nvme.get("percentage_used"), nvme.get("media_errors") or 0
+        if isinstance(used, (int, float)):
+            detail, warn = f"{int(used)}% life used", warn or used >= 80 or errs > 0
+        elif errs:
+            detail, warn = f"{errs} media errors", True
+    else:
+        for attr in ((d.get("ata_smart_attributes") or {}).get("table") or []):
+            if attr.get("name") == "Reallocated_Sector_Ct":
+                rc = (attr.get("raw") or {}).get("value", 0) or 0
+                if rc:
+                    detail, warn = f"{rc} reallocated sectors", True
+                break
+
+    return {
+        "device": dev,
+        "model": str(d.get("model_name") or (d.get("device") or {}).get("name") or dev)[:48],
+        "health": "PASSED" if passed else "FAILED",
+        "temp_c": temp_c if isinstance(temp_c, (int, float)) else None,
+        "power_on_hours": hours if isinstance(hours, (int, float)) else None,
+        "detail": detail,
+        "warn": warn,
+    }
+
+
 # ------------------------------------------------------------ data dir / seed
 
 # Runtime files that live in DATA, each seeded from a baked example in BASE.
@@ -391,6 +486,7 @@ def public_config(cfg):
         "temp_unit":      c.get("temp_unit", DEFAULTS["temp_unit"]),
         "temp_throttle_c": c.get("temp_throttle_c", DEFAULTS["temp_throttle_c"]),
         "disk_warn_pct":  c.get("disk_warn_pct", DEFAULTS["disk_warn_pct"]),
+        "smart_enabled":  c.get("smart_enabled", DEFAULTS["smart_enabled"]),
         "tick_seconds":   c.get("tick_seconds", DEFAULTS["tick_seconds"]),
         "disk_min_gb":    c.get("disk_min_gb", DEFAULTS["disk_min_gb"]),
         "iface_skip":     c.get("iface_skip", DEFAULTS["iface_skip"]),
@@ -684,6 +780,9 @@ def sanitize_config(incoming):
             return None, "disk_warn_pct must be a number between 0 and 100"
         cfg["disk_warn_pct"] = float(v)
 
+    if "smart_enabled" in incoming:
+        cfg["smart_enabled"] = bool(incoming.get("smart_enabled"))
+
     if "tick_seconds" in incoming:
         v = incoming.get("tick_seconds")
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not (0.5 <= v <= 60):
@@ -948,6 +1047,11 @@ class Sampler:
         self._prev_net = net_bytes()
         self._prev_t = time.monotonic()
         self._docker = docker_ps()
+        # prime SMART once so the panel has data on first paint (returns instantly
+        # when smartctl is absent — the common case off real hardware)
+        self._smart = (smart_data()
+                       if startup_cfg.get("smart_enabled", DEFAULTS["smart_enabled"])
+                       else None)
         self._tick_n = 0
 
         # restore persisted alert state so a restart doesn't re-fire alerts
@@ -997,6 +1101,11 @@ class Sampler:
         self._tick_n += 1
         if self._tick_n % DOCKER_EVERY == 0:
             self._docker = docker_ps()
+        # SMART on its own slow cadence; re-read the toggle here (cheap at 60s)
+        # so flipping it in settings takes effect without a restart
+        if self._tick_n % SMART_EVERY == 0:
+            enabled = load_config().get("smart_enabled", DEFAULTS["smart_enabled"])
+            self._smart = smart_data() if enabled else None
 
         mi = meminfo()
         mem_total = mi.get("MemTotal", 1)
@@ -1033,6 +1142,7 @@ class Sampler:
             "disks": raw_disks,
             "net": net,
             "docker": self._docker,
+            "smart": self._smart,
         }
         with self.lock:
             self.snapshot = snap

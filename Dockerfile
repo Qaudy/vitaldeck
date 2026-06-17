@@ -1,7 +1,10 @@
 FROM python:3.12-alpine
 
-# docker-cli so the dash can show container status via the mounted socket
-RUN apk add --no-cache docker-cli
+# docker-cli so the dash can show container status via the mounted socket;
+# smartmontools (smartctl) powers the Disk Health panel. smartctl is harmless
+# when the container has no device access — smart_data() just returns None and
+# the panel hides, so this adds no requirement to the default deployment.
+RUN apk add --no-cache docker-cli smartmontools
 
 WORKDIR /app
 COPY server.py ./
