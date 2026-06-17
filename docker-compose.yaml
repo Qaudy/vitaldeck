@@ -14,11 +14,21 @@ services:
       HOST_ROOT: /host/root
       # where the dashboard stores links/config/categories + the admin account
       DATA_DIR: /app/data
+    # SMART disk-health panel needs to issue raw SMART commands to the drives.
+    # This is the one privilege the dashboard asks for beyond read-only mounts —
+    # far narrower than `privileged: true`. Don't want it? Delete these two lines
+    # and the /dev mount below; the panel simply hides. Some HBAs / USB-SATA
+    # bridges additionally need SYS_ADMIN — add it here only if your drives don't
+    # show up.
+    cap_add:
+      - SYS_RAWIO
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/host/root:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # host device nodes (read-only) so smartctl can read drive SMART data
+      - /dev:/dev:ro
       # persistent state: settings edited in the dashboard + your login survive
       # `docker compose up -d --force-recreate` and image updates. No file prep
       # needed — first run seeds defaults into the volume automatically.

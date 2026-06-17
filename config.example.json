@@ -4,6 +4,7 @@
   "temp_unit": "C",
   "temp_throttle_c": 85,
   "disk_warn_pct": 80,
+  "smart_enabled": true,
   "tick_seconds": 2.0,
   "disk_min_gb": 1,
   "iface_skip": "^(lo|docker\\d+|br-[0-9a-f]+|veth.*)$",

@@ -6,6 +6,28 @@ All notable changes to vitaldeck are documented here.
 
 ## [Unreleased]
 
+### Added — Phase 4
+
+- **Disk health (SMART) panel** — a new dashboard card showing per-drive SMART status:
+  overall health (PASSED / FAILED), temperature (in your configured °C/°F unit), power-on
+  age, and the main wear indicator (NVMe life-used %, or ATA reallocated-sector count). It
+  reads real SMART data by shelling out to `smartctl`, polled on a slow ~60 s cadence so it
+  never stalls the live `/proc` sampler. The whole card hides itself when SMART can't be
+  read (no `smartctl`, no device access, or disabled in settings), so hosts that can't
+  expose SMART look exactly as before. Toggle it in Settings → General.
+- **Mobile-responsive layout** — a phone-tier stylesheet (≤ 560 px) tightens the header,
+  collapses the settings modal's two-column rows, lets the fixed-width category dropdowns go
+  full width, and enlarges tap targets. The dashboard is now usable on a phone; verified at
+  360–414 px widths.
+
+### Changed — Phase 4
+
+- The Docker image now bundles `smartmontools`, and `docker-compose.yaml` grants the
+  container `SYS_RAWIO` plus a read-only `/dev` mount so `smartctl` can query the drives.
+  This is the only privilege the dashboard requests beyond its read-only host mounts; remove
+  the capability and the `/dev` mount to opt out (the panel then hides). See the README
+  Security section.
+
 ### Added — Phase 3
 
 - **5 built-in colour presets** in Settings → Appearance: Aurora Dark (default), Synthwave,

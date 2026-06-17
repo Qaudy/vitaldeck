@@ -109,6 +109,21 @@
   .disk .bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--green), var(--cyan)); transition: width .6s ease; }
   .disk .bar i.warn { background: linear-gradient(90deg, var(--amber), var(--pink)); }
 
+  /* disk health (SMART) */
+  .smart { padding: 9px 0; border-bottom: 1px solid var(--card-edge); }
+  .smart:last-child { border-bottom: none; }
+  .smart:first-child { padding-top: 0; }
+  .smart .row { display: flex; align-items: center; gap: 10px; }
+  .smart .hd { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; color: var(--text); }
+  .smart .hd i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .smart .hd i.up { background: var(--green); box-shadow: 0 0 7px var(--green); }
+  .smart .hd i.down { background: var(--red); box-shadow: 0 0 7px var(--red); }
+  .smart .model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .smart .badge { margin-left: auto; flex: none; font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--card-edge); color: var(--green); }
+  .smart .badge.bad { color: var(--red); border-color: var(--red); }
+  .smart .sub { font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin-top: 4px; }
+  .smart.warn .sub { color: var(--amber); }
+
   /* network */
   .iface { margin-bottom: 14px; }
   .iface .row { display: flex; gap: 14px; align-items: baseline; font-family: var(--mono); font-size: 12.5px; margin-bottom: 4px; }
@@ -252,6 +267,32 @@
   .theme-preset { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 7px 12px; }
   .theme-preset .dots { display: flex; gap: 4px; }
   .theme-preset .dots i { width: 11px; height: 11px; border-radius: 50%; display: block; flex: none; }
+
+  /* ---- phone tier ---- the 12-col grid already stacks below 720px; this only
+     tunes the parts that don't reflow on their own: the header meta row, the
+     settings modal + its two-column rows, the fixed-width category dropdowns,
+     and tap-target sizes. Verified against 360–414px widths. */
+  @media (max-width: 560px) {
+    .wrap { padding: 14px 12px 36px; }
+    header { gap: 6px 14px; padding: 4px 2px 16px; }
+    .meta { width: 100%; margin-left: 0; font-size: 12px; gap: 6px 12px; }
+    #clock { font-size: 14px; }
+    .card { padding: 14px; }
+    .cores { grid-template-columns: repeat(2, 1fr); }
+    .links { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+    /* settings modal goes near full-bleed and its 2-col rows collapse to 1 */
+    .modal { max-width: none; border-radius: 14px; }
+    .modal-head, .modal-foot { padding: 14px 16px; }
+    .tabpane { padding: 16px 16px 18px; }
+    .grid2 { grid-template-columns: 1fr; }
+    /* container-assignment rows: let the fixed 190px dropdown go full width */
+    .ctr-assign-row { flex-wrap: wrap; gap: 8px; }
+    .ctr-assign-row .cselect, .ctr-assign-row select { width: 100%; }
+    /* roomier tap targets for the icon buttons, dropdowns and swatches */
+    .iconbtn { font-size: 22px; padding: 6px 8px; }
+    .cselect-btn, .cselect-opt { padding-top: 11px; padding-bottom: 11px; }
+    .swatch input[type=color] { width: 44px; height: 32px; }
+  }
 </style>
 </head>
 <body>
@@ -295,6 +336,11 @@
       <h2>Storage</h2>
       <div id="disksEl"></div>
       <h2 style="margin-top:16px">Swap <span class="val" id="swap">–</span></h2>
+    </div>
+
+    <div class="card c12" id="smartCard" style="display:none">
+      <h2>Disk Health <span class="val" id="smartCount"></span></h2>
+      <div id="smartEl"></div>
     </div>
 
     <div class="card c12">
@@ -359,6 +405,8 @@
         <input type="number" id="setThrottle" min="1" max="200" step="1" value="85"></label>
       <label class="field"><span>Disk warn % — bar turns amber above this</span>
         <input type="number" id="setDiskWarn" min="0" max="100" step="1" value="80"></label>
+      <label class="toggle" style="margin-top:4px"><input type="checkbox" id="setSmart"> Show disk health (SMART) panel</label>
+      <span style="font-size:11px;color:var(--dim);margin-top:5px;display:block">Needs <code style="font-family:var(--mono)">smartctl</code> plus device access (see README). The panel is hidden automatically when SMART can't be read.</span>
       <hr style="border:none;border-top:1px solid var(--card-edge);margin:18px 0">
       <p style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:12px">Server settings <span style="font-size:10px;text-transform:none;letter-spacing:0">(restart to apply)</span></p>
       <label class="field"><span>Sample interval (seconds)</span>
@@ -469,6 +517,12 @@ const fmtRate = b => fmtBytes(b) + "/s";
 function fmtUp(s) {
   const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
   return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+}
+// SMART power-on time: hours → a friendly age (years past 1y, days past 2d)
+function fmtHours(h) {
+  if (h >= 8760) return (h/8760).toFixed(1) + "y on";
+  if (h >= 48)   return Math.round(h/24) + "d on";
+  return Math.round(h) + "h on";
 }
 
 /* ---------- canvas sparkline ----------
@@ -611,6 +665,33 @@ function render(s) {
       <div class="row"><span>${esc(d.mount)}</span><span>${fmtBytes(d.used)} / ${fmtBytes(d.total)} · ${p.toFixed(0)}%</span></div>
       <div class="bar"><i class="${p > (_cfg.disk_warn_pct ?? 80) ? "warn" : ""}" style="width:${p}%"></i></div></div>`;
   }).join("");
+
+  // disk health (SMART) — the whole card is hidden when the backend returns
+  // null (smartctl missing, no device access, or disabled in settings), so the
+  // dashboard looks the same as before on hosts that can't read SMART.
+  const smartCard = $("smartCard");
+  if (!s.smart) {
+    smartCard.style.display = "none";
+  } else {
+    smartCard.style.display = "";
+    const bad = s.smart.filter(d => d.warn).length;
+    $("smartCount").textContent = bad ? `${bad} need attention` : "all healthy";
+    $("smartEl").innerHTML = s.smart.map(d => {
+      const ok = d.health === "PASSED";
+      const bits = [];
+      if (d.temp_c != null) bits.push(_cfg.temp_unit === "F"
+        ? `${(d.temp_c * 9/5 + 32).toFixed(0)}°F` : `${d.temp_c}°C`);
+      if (d.power_on_hours != null) bits.push(fmtHours(d.power_on_hours));
+      if (d.detail) bits.push(esc(d.detail));
+      return `<div class="smart${d.warn ? " warn" : ""}">
+        <div class="row">
+          <span class="hd"><i class="${ok ? "up" : "down"}"></i><span class="model">${esc(d.model)}</span></span>
+          <span class="badge ${ok ? "ok" : "bad"}">${esc(d.health)}</span>
+        </div>
+        <div class="sub">${esc(d.device)}${bits.length ? " · " + bits.join(" · ") : ""}</div>
+      </div>`;
+    }).join("");
+  }
 
   // docker — group pills under their category; uncategorized go to "Other",
   // which sorts last. If nothing is categorized, render flat with no heading.
@@ -878,6 +959,7 @@ function openSettings() {
       $("setTempUnit").value  = cfg.temp_unit      || "C";
       $("setThrottle").value  = cfg.temp_throttle_c ?? 85;
       $("setDiskWarn").value  = cfg.disk_warn_pct  ?? 80;
+      $("setSmart").checked   = cfg.smart_enabled !== false;
       $("setTick").value      = cfg.tick_seconds   ?? 2;
       $("setDiskMin").value   = cfg.disk_min_gb    ?? 1;
       $("setIfaceSkip").value = cfg.iface_skip     || "";
@@ -1002,6 +1084,7 @@ async function saveSettings() {
     temp_unit:       $("setTempUnit").value,
     temp_throttle_c: Number($("setThrottle").value)  || 85,
     disk_warn_pct:   Number($("setDiskWarn").value)  ?? 80,
+    smart_enabled:   $("setSmart").checked,
     tick_seconds:    Number($("setTick").value)      || 2,
     disk_min_gb:     Number($("setDiskMin").value)   ?? 1,
     iface_skip:      $("setIfaceSkip").value.trim(),

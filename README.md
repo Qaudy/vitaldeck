@@ -20,6 +20,7 @@ Panels:
 - **Memory** — ring gauge of used RAM
 - **Network** — per-interface rx/tx throughput sparklines
 - **Disks** — usage bars for every real volume above your configured size threshold
+- **Disk health (SMART)** — per-drive SMART status, temperature, age, and wear; hides itself when SMART can't be read
 - **Docker** — container status chips, grouped into your own categories
 - **Quick links** — a configurable grid of links to your services
 - **Alerts** — Discord webhook notifications on threshold breaches and container start/stop
@@ -119,6 +120,7 @@ Everything is edited in **⚙ settings** (top-right) and persisted to the data v
 | Temperature unit | `°C` or `°F` — changes the ring gauge label and sub-text. |
 | Throttle temp (°C) | The ring gauge's 100% point. Default 85 °C (Raspberry Pi throttle). Tune for your hardware. |
 | Disk warn % | The disk bars turn amber above this percentage. Independent from the Discord alert threshold. |
+| Show disk health (SMART) | Toggles the Disk Health panel. Needs `smartctl` plus device access (see [Disk health](#disk-health-smart)); the panel hides automatically when SMART can't be read. |
 
 **Server settings** (restart container to apply):
 
@@ -178,6 +180,29 @@ Five built-in colour presets (**Aurora Dark**, **Synthwave**, **Ocean**,
 fills all colour pickers and previews live. You can then fine-tune individual
 swatches. **Save** persists the result; **Reset** restores the Aurora Dark
 defaults.
+
+---
+
+## Disk health (SMART)
+
+The **Disk Health** panel reports per-drive SMART data: overall health
+(PASSED / FAILED), temperature (in your configured °C/°F unit), power-on age, and
+the main wear indicator (NVMe life-used %, or ATA reallocated-sector count). It
+polls on a slow ~60 s cadence — SMART probes are far heavier than the `/proc`
+reads, so they're kept off the live sampler.
+
+It needs two things, and **degrades gracefully when either is missing** — the
+panel simply hides, and the rest of the dashboard is unaffected:
+
+1. **`smartctl`** — bundled in the Docker image (`smartmontools`). For a bare-metal
+   run, install your distro's `smartmontools` package.
+2. **Raw device access** — the shipped `docker-compose.yaml` grants the container
+   `SYS_RAWIO` and a read-only `/dev` mount. Some HBAs or USB-SATA bridges also
+   need `SYS_ADMIN`; add it to `cap_add` only if your drives don't appear.
+
+To turn the panel off without changing privileges, untick **Show disk health
+(SMART)** in ⚙ settings → General. To drop the extra privilege entirely, remove the
+`cap_add` and the `/dev:/dev:ro` mount from `docker-compose.yaml`.
 
 ---
 
@@ -247,6 +272,12 @@ settings endpoints require a valid signed-cookie session. Understand the limits:
 - The **Docker socket is root-equivalent.** Mounting it `:ro` only protects
   the socket file, not the Docker API behind it. Anyone with a valid session
   can read container metadata.
+- The **Disk Health panel needs raw device access.** The shipped compose grants
+  the container `SYS_RAWIO` and a read-only `/dev` mount so `smartctl` can issue
+  SMART commands to your drives. This is the only privilege beyond the read-only
+  host mounts, and far narrower than `privileged: true`. Don't want it? Remove
+  the `cap_add` and the `/dev:/dev:ro` line from `docker-compose.yaml` — the
+  panel hides and nothing else changes. See [Disk health](#disk-health-smart).
 - Sessions are stateless HMAC-signed cookies. Changing your password rotates
   the signing secret, immediately invalidating all other sessions.
 - The server caps concurrent SSE connections (`MAX_SSE = 32`) to blunt a
